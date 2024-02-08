@@ -66,6 +66,7 @@
   #define LOCAL_SWITCH BOOL_SWITCH
 #endif
 
+#if 0
 #define FP16_SWITCH(COND, ...)               \
   [&] {                                      \
     if (COND) {                              \
@@ -76,7 +77,17 @@
       return __VA_ARGS__();                  \
     }                                        \
   }()
+#else
+#define FP16_SWITCH(COND, ...)               \
+  [&] {                                      \
+    TORCH_CHECK(COND, "temporarily only supports fp16"); \
+    using elem_type = cutlass::half_t;     \
+    return __VA_ARGS__();                  \
+  }()
+#endif
 
+
+#if 0
 #define HEADDIM_SWITCH(HEADDIM, ...)   \
   [&] {                                    \
     if (HEADDIM <= 32) {                   \
@@ -105,3 +116,11 @@
       return __VA_ARGS__();                \
     }                                      \
   }()
+#else
+#define HEADDIM_SWITCH(HEADDIM, ...)   \
+  [&] {                                  \
+    TORCH_CHECK(HEADDIM == 64, "head dim temporarily restricted to 64");        \
+    constexpr static int kHeadDim = 64;  \
+    return __VA_ARGS__();                \
+  }()
+#endif
