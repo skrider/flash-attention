@@ -81,32 +81,25 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     dim3 grid(num_m_block, params.num_splits > 1 ? params.num_splits : params.b, params.num_splits > 1 ? params.b * params.h : params.h);
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
     const bool is_even_K = params.d == Kernel_traits::kHeadDim;
-    BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-        BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
-            EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
-                LOCAL_SWITCH((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal, Is_local, [&] {
-                    BOOL_SWITCH(params.num_splits > 1, Split, [&] {
-                        BOOL_SWITCH(params.knew_ptr != nullptr, Append_KV, [&] {
-                            ALIBI_SWITCH(params.alibi_slopes_ptr != nullptr, Has_alibi, [&] {
-                                // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
-                                // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
-                                // If Is_local, set Is_causal to false
-                                auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, Is_local && !Is_causal, Has_alibi, IsEvenMNConst && !Append_KV && IsEvenKConst && !Is_local && Kernel_traits::kHeadDim <= 128, IsEvenKConst, Split, Append_KV>;
-                                // auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, false, true, Split, Append_KV>;
-                                // auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, false, IsEvenKConst>;
-                                if (smem_size >= 48 * 1024) {
-                                    C10_CUDA_CHECK(cudaFuncSetAttribute(
-                                        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-                                }
-                                kernel<<<grid, Kernel_traits::kNThreads, smem_size, stream>>>(params);
-                                C10_CUDA_KERNEL_LAUNCH_CHECK();
-                            });
-                        });
-                    });
-                });
-            });
-        });
-    });
+    constexpr static bool Is_causal = true; TORCH_CHECK(params.is_causal == Is_causal, "TEMP");
+    constexpr static bool IsEvenMNConst = true; TORCH_CHECK(is_even_MN == IsEvenMNConst, "TEMP");
+    constexpr static bool IsEvenKConst = true; TORCH_CHECK(is_even_K == IsEvenKConst, "TEMP");
+    constexpr static bool Is_local = true; TORCH_CHECK(params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP");
+    constexpr static bool Split = true; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP");
+    constexpr static bool Append_KV = true; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
+    constexpr static bool Has_alibi = true; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP");
+    // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
+    // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
+    // If Is_local, set Is_causal to false
+    auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, Is_local && !Is_causal, Has_alibi, IsEvenMNConst && !Append_KV && IsEvenKConst && !Is_local && Kernel_traits::kHeadDim <= 128, IsEvenKConst, Split, Append_KV>;
+    // auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, false, true, Split, Append_KV>;
+    // auto kernel = &flash_fwd_splitkv_kernel<Kernel_traits, Is_causal, false, IsEvenKConst>;
+    if (smem_size >= 48 * 1024) {
+        C10_CUDA_CHECK(cudaFuncSetAttribute(
+            kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    }
+    kernel<<<grid, Kernel_traits::kNThreads, smem_size, stream>>>(params);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     if (params.num_splits > 1) {
         // We want kBlockM to be as small as possible for more parallelism.
         // With 128 threads we can load 512 elements at a time, so if headdim is divisible by 128, kBlockM = 4.
