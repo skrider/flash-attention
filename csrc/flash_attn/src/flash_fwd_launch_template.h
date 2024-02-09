@@ -36,40 +36,40 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     // https://github.com/kokkos/kokkos-kernels/issues/349
     // https://github.com/HazyResearch/flash-attention/issues/21
 
-    const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
-    dim3 grid(num_m_block, params.b, params.h);
-    const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
-    const bool is_even_K = params.d == Kernel_traits::kHeadDim;
-    const bool return_softmax = params.p_ptr != nullptr;
-    BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
-        EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
-            LOCAL_SWITCH((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal, Is_local, [&] {
-                BOOL_SWITCH(return_softmax, ReturnSoftmaxConst, [&] {
-                    ALIBI_SWITCH(params.alibi_slopes_ptr != nullptr, Has_alibi, [&] {
-                        // Will only return softmax if dropout, to reduce compilation time.
-                        // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
-                        // If return_softmax, set IsEvenMNConst to false to reduce number of templates
-                        // If head dim > 128, set IsEvenMNConst to false to reduce number of templates
-                        // If Is_local, set Is_causal to false
-                        auto kernel = &flash_fwd_kernel<Kernel_traits, Is_dropout, Is_causal, Is_local && !Is_causal, Has_alibi, IsEvenMNConst && IsEvenKConst && !Is_local && !ReturnSoftmaxConst && Kernel_traits::kHeadDim <= 128, IsEvenKConst, ReturnSoftmaxConst && Is_dropout>;
-                        // auto kernel = &flash_fwd_kernel<Kernel_traits, false, Is_causal, false, false, true, true, false>;
-                        // printf("IsEvenMNConst = %d, IsEvenKConst = %d, Is_local = %d, Is_causal = %d, ReturnSoftmaxConst = %d, Is_dropout = %d\n", int(IsEvenMNConst), int(IsEvenKConst), int(Is_local), int(Is_causal), int(ReturnSoftmaxConst), int(Is_dropout));
-                        // auto kernel = &flash_fwd_kernel<Kernel_traits, false, Is_causal, false, true, true, false>;
-                        if (smem_size >= 48 * 1024) {
-                            C10_CUDA_CHECK(cudaFuncSetAttribute(
-                                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-                        }
-                        // int ctas_per_sm;
-                        // cudaError status_ = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                        //     &ctas_per_sm, kernel, Kernel_traits::kNThreads, smem_size);
-                        // printf("smem_size = %d, CTAs per SM = %d\n", int(smem_size), ctas_per_sm);
-                        kernel<<<grid, Kernel_traits::kNThreads, smem_size, stream>>>(params);
-                        C10_CUDA_KERNEL_LAUNCH_CHECK();
-                    });
-                });
-            });
-        });
-    });
+    // const int num_m_block = (params.seqlen_q + Kernel_traits::kBlockM - 1) / Kernel_traits::kBlockM;
+    // dim3 grid(num_m_block, params.b, params.h);
+    // const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
+    // const bool is_even_K = params.d == Kernel_traits::kHeadDim;
+    // const bool return_softmax = params.p_ptr != nullptr;
+    // BOOL_SWITCH(is_even_MN, IsEvenMNConst, [&] {
+    //     EVENK_SWITCH(is_even_K, IsEvenKConst, [&] {
+    //         LOCAL_SWITCH((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal, Is_local, [&] {
+    //             BOOL_SWITCH(return_softmax, ReturnSoftmaxConst, [&] {
+    //                 ALIBI_SWITCH(params.alibi_slopes_ptr != nullptr, Has_alibi, [&] {
+    //                     // Will only return softmax if dropout, to reduce compilation time.
+    //                     // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
+    //                     // If return_softmax, set IsEvenMNConst to false to reduce number of templates
+    //                     // If head dim > 128, set IsEvenMNConst to false to reduce number of templates
+    //                     // If Is_local, set Is_causal to false
+    //                     auto kernel = &flash_fwd_kernel<Kernel_traits, Is_dropout, Is_causal, Is_local && !Is_causal, Has_alibi, IsEvenMNConst && IsEvenKConst && !Is_local && !ReturnSoftmaxConst && Kernel_traits::kHeadDim <= 128, IsEvenKConst, ReturnSoftmaxConst && Is_dropout>;
+    //                     // auto kernel = &flash_fwd_kernel<Kernel_traits, false, Is_causal, false, false, true, true, false>;
+    //                     // printf("IsEvenMNConst = %d, IsEvenKConst = %d, Is_local = %d, Is_causal = %d, ReturnSoftmaxConst = %d, Is_dropout = %d\n", int(IsEvenMNConst), int(IsEvenKConst), int(Is_local), int(Is_causal), int(ReturnSoftmaxConst), int(Is_dropout));
+    //                     // auto kernel = &flash_fwd_kernel<Kernel_traits, false, Is_causal, false, true, true, false>;
+    //                     if (smem_size >= 48 * 1024) {
+    //                         C10_CUDA_CHECK(cudaFuncSetAttribute(
+    //                             kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+    //                     }
+    //                     // int ctas_per_sm;
+    //                     // cudaError status_ = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    //                     //     &ctas_per_sm, kernel, Kernel_traits::kNThreads, smem_size);
+    //                     // printf("smem_size = %d, CTAs per SM = %d\n", int(smem_size), ctas_per_sm);
+    //                     kernel<<<grid, Kernel_traits::kNThreads, smem_size, stream>>>(params);
+    //                     C10_CUDA_KERNEL_LAUNCH_CHECK();
+    //                 });
+    //             });
+    //         });
+    //     });
+    // });
 }
 
 template<typename Kernel_traits>
@@ -82,12 +82,12 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
     const bool is_even_K = params.d == Kernel_traits::kHeadDim;
     constexpr static bool Is_causal = true; TORCH_CHECK(params.is_causal == Is_causal, "TEMP");
-    constexpr static bool IsEvenMNConst = true; TORCH_CHECK(is_even_MN == IsEvenMNConst, "TEMP");
+    constexpr static bool IsEvenMNConst = false; TORCH_CHECK(is_even_MN == IsEvenMNConst, "TEMP");
     constexpr static bool IsEvenKConst = true; TORCH_CHECK(is_even_K == IsEvenKConst, "TEMP");
-    constexpr static bool Is_local = true; TORCH_CHECK(params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP");
-    constexpr static bool Split = true; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP");
-    constexpr static bool Append_KV = true; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
-    constexpr static bool Has_alibi = true; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP");
+    constexpr static bool Is_local = false; TORCH_CHECK((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP");
+    constexpr static bool Split = false; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP");
+    constexpr static bool Append_KV = false; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
+    constexpr static bool Has_alibi = false; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP");
     // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
     // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
     // If Is_local, set Is_causal to false
@@ -133,7 +133,8 @@ void run_mha_fwd_splitkv_dispatch(Flash_fwd_params &params, cudaStream_t stream)
     // TD [2023-08-28]: nvcc segfaults for headdim 96 with block size 64 x 256,
     // and for headdim 192 with block size 64 x 128.
     // Also for headdim 160 with block size 64 x 128 after the rotary addition.
-    constexpr static int kBlockN = Headdim <= 64 ? 256 : (Headdim <= 128 ? 128 : 64);
+    // constexpr static int kBlockN = Headdim <= 64 ? 256 : (Headdim <= 128 ? 128 : 64);
+    constexpr static int kBlockN = 64;
     run_flash_splitkv_fwd<Flash_fwd_kernel_traits<Headdim, kBlockM, kBlockN, 4, false, false, T>>(params, stream);
 }
 
