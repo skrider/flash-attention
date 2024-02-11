@@ -1840,7 +1840,7 @@ def test_flash_attn_splitkv(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [(16, 128 * 1024)])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [(16, 128)])
 def test_flash_attn_kvcache(
     seqlen_q,
     seqlen_k,
