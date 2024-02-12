@@ -604,7 +604,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tQgQ = gmem_thr_copy_Q.partition_S(gQ);
     Tensor tQsQ = gmem_thr_copy_Q.partition_D(sQ);
     Tensor tKgK = gmem_thr_copy_KV.partition_S(gK);  // (KCPY, KCPY_N, KCPY_K)
-    Tensor tKgK__shadow = gmem_thr_copy_KV.partition_S(gK__shadow);  // (KCPY, KCPY_N, KCPY_K)
     Tensor tKsK = gmem_thr_copy_KV.partition_D(sK);
     Tensor tVgV = gmem_thr_copy_KV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_KV.partition_D(sV);
@@ -627,8 +626,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // }
     // KIN_PRINT(print_tensor(tKgK))
     // KIN_PRINT(print_tensor(gK))
-    // KIN_PRINT(print_tensor(tKgK__shadow))
-    // KIN_PRINT(print_tensor(gK__shadow))
 #endif
 
     typename Kernel_traits::TiledMma tiled_mma;
