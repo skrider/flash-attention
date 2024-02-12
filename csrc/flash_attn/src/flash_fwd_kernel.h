@@ -572,7 +572,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
           + (n_block_max - 1) * kBlockN * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride
         : (bidh / params.h_h_k_ratio) * params.k_head_stride; // block addresses are later resolved per-thread
 
-    const index_t row_offset_k__shadow = block_table[(n_block_max - 1) * kBlockN / params.page_block_size] * params.k_batch_stride + (((n_block_max - 1) * kBlockN) % params.page_block_size) * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
     const index_t row_offset_v = block_table == nullptr
         ? binfo.k_offset(params.v_batch_stride, params.v_row_stride, bidb_cache)
           + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
@@ -584,9 +583,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                             Shape<Int<kBlockM>, Int<kHeadDim>>{},
                             make_stride(params.q_row_stride, _1{}));
     Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k),
-                            Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                            make_stride(params.k_row_stride, _1{}));
-    Tensor gK__shadow = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.k_ptr) + row_offset_k__shadow),
                             Shape<Int<kBlockN>, Int<kHeadDim>>{},
                             make_stride(params.k_row_stride, _1{}));
     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("k_ptr = %p, row_offset_k = %d, gK_ptr = %p\n", params.k_ptr, row_offset_k, gK.data()); }
