@@ -1802,7 +1802,7 @@ def test_flash_attn_splitkv(
 # @pytest.mark.parametrize("mha_type", ["mha", "mqa", "gqa"])
 @pytest.mark.parametrize("mha_type", ["mha"])
 # @pytest.mark.parametrize("new_kv", [False, True])
-@pytest.mark.parametrize("new_kv", [False])
+@pytest.mark.parametrize("new_kv", [True])
 # @pytest.mark.parametrize("alibi", [False, True])
 @pytest.mark.parametrize("alibi", [False])
 # @pytest.mark.parametrize("local", [False, True])

@@ -86,7 +86,7 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     constexpr static bool IsEvenKConst = true; TORCH_CHECK(is_even_K == IsEvenKConst, "TEMP");
     constexpr static bool Is_local = false; TORCH_CHECK((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP");
     constexpr static bool Split = false; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP");
-    constexpr static bool Append_KV = false; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
+    constexpr static bool Append_KV = true; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
     constexpr static bool Has_alibi = false; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP");
     // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
     // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
