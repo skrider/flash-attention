@@ -354,6 +354,24 @@ __forceinline__ __device__ constexpr auto unsqueeze(Layout<Shape, Stride> l) {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+template <class T>
+__forceinline__ __device__
+auto reshape_thread_tile_helper(T t) {
+    return ;
+}
+
+// somewhat unorthodox reshape function. Given a tuple ((v1, v2), m, k), returns (v1, v2, k),         
+// where v2 may be a tuple itself, in the case of swizzled smem-backed thread tiles. This ensures
+// that paged and non-paged copies result in equivalently shaped, if not necessarily strided, tensors.
+template <class Shape, class Stride>
+__forceinline__ __device__
+auto reshape_thread_tile(Layout<Shape, Stride> l) {
+    return make_layout(append(get<0>(l.shape()), get<2>(l.shape())),
+                        append(get<0>(l.stride()), get<2>(l.stride())));
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 template <bool Is_even_MN=true, bool Is_even_K=true, bool Clear_OOB_MN=false, bool Clear_OOB_K=true,
           typename TiledCopy, typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2, typename Engine3, typename Layout3>

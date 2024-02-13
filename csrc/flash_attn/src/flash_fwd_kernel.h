@@ -608,10 +608,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor tVgV_ = gmem_thr_copy_KV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV_ = gmem_thr_copy_KV.partition_D(sV);
 
-    Tensor tKgK = make_tensor(tKgK_.data(), unsqueeze<2>(layout<0>(tKgK_.layout())));
-    Tensor tKsK = make_tensor(tKsK_.data(), unsqueeze<2>(layout<0>(tKsK_.layout())));
-    Tensor tVgV = make_tensor(tVgV_.data(), unsqueeze<2>(layout<0>(tVgV_.layout())));
-    Tensor tVsV = make_tensor(tVsV_.data(), unsqueeze<2>(layout<0>(tVsV_.layout())));
+    Tensor tKgK__ = make_tensor(tKgK_.data(), reshape_thread_tile(tKgK_.layout()));
+    Tensor tKsK__ = make_tensor(tKsK_.data(), reshape_thread_tile(tKsK_.layout()));
+    Tensor tVgV__ = make_tensor(tVgV_.data(), reshape_thread_tile(tVgV_.layout()));
+    Tensor tVsV__ = make_tensor(tVsV_.data(), reshape_thread_tile(tVsV_.layout()));
+
+    Tensor tKgK = tKgK__;
+    Tensor tKsK = tKsK__;
+    Tensor tVgV = tVgV__;
+    Tensor tVsV = tVsV__;
 
     if (block_table != nullptr) {
         tKgK.data() = gK.data() + flash::init_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block_max, params.page_block_size,
@@ -724,14 +729,24 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         Tensor tKgKnew_ = gmem_thr_copy_KV_new.partition_S(gKnew);  // (KCPY, KCPY_N, KCPY_K)
         Tensor tVgVnew_ = gmem_thr_copy_KV_new.partition_S(gVnew);  // (VCPY, VCPY_N, VCPY_K)
 
-        auto tKgKnew = make_tensor(tKgKnew_.data(), unsqueeze<2>(layout<0>(tKgKnew_.layout())));
-        auto tVgVnew = make_tensor(tVgVnew_.data(), unsqueeze<2>(layout<0>(tVgVnew_.layout())));
+        auto tKgKnew = make_tensor(tKgKnew_.data(), reshape_thread_tile(tKgKnew_.layout()));
+        auto tVgVnew = make_tensor(tVgVnew_.data(), reshape_thread_tile(tVgVnew_.layout()));
 
         const int n_block_copy_min = std::max(n_block_min, binfo.seqlen_k_cache / kBlockN);
         auto tKgK_data = tKgK.data();
         auto tVgV_data = tVgV.data();
 KIN_PRINT(print(tKgKnew))
+KIN_PRINT(print(tKgK))
+KIN_PRINT(print(tKsK))
+KIN_PRINT(print(tKgK_))
+KIN_PRINT(print(tKgK__))
+KIN_PRINT(print(tKsK__))
 KIN_PRINT(print(tVgVnew))
+KIN_PRINT(print(tVgV))
+KIN_PRINT(print(tVsV))
+KIN_PRINT(print(tVgV_))
+KIN_PRINT(print(tVgV__))
+KIN_PRINT(print(tVsV__))
 KIN_PRINT(print(tRgCos))
 KIN_PRINT(print(tRgSin))
 KIN_PRINT(print(tKVcKV))
