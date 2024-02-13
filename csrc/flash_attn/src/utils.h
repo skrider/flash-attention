@@ -346,20 +346,6 @@ int advance_thread_kv_page_slice_offset(const int tidx, const int n_block, const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <int N, class Shape, class Stride>
-__forceinline__ __device__ constexpr auto unsqueeze(Layout<Shape, Stride> l) {
-    return make_layout(insert<N>(l.shape(), Int<1>{}),
-                       insert<N>(l.stride(), Int<0>{}));
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-template <class T>
-__forceinline__ __device__
-auto reshape_thread_tile_helper(T t) {
-    return ;
-}
-
 // somewhat unorthodox reshape function. Given a tuple ((v1, v2), m, k), returns (v1, v2, k),         
 // where v2 may be a tuple itself, in the case of swizzled smem-backed thread tiles. This ensures
 // that paged and non-paged copies result in equivalently shaped, if not necessarily strided, tensors.
