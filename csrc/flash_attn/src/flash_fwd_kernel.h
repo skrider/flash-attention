@@ -662,7 +662,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
     // Repeat the partitioning with identity layouts
     Tensor tQcQ = gmem_thr_copy_Q.partition_S(cQ);       // (ACPY,ACPY_M,ACPY_K) -> (blk_m,blk_k)
-    Tensor tKVcKV = gmem_thr_copy_KV.partition_S(cKV);   // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
+    Tensor tKVcKV_ = gmem_thr_copy_KV.partition_S(cKV);   // (BCPY,BCPY_N,BCPY_K) -> (blk_n,blk_k)
+    Tensor tKVcKV = make_tensor(tKVcKV_.data(), reshape_thread_tile(tKVcKV_.layout()));
 
     // Allocate predicate tensors for k
     Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tQsQ)));
@@ -683,6 +684,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     auto gmem_thr_copy_rotary = gmem_tiled_copy_rotary.get_thread_slice(tidx);
     typename Kernel_traits::GmemTiledCopyRotcossinCont gmem_tiled_copy_rotary_cont;
     auto gmem_thr_copy_rotary_cont = gmem_tiled_copy_rotary_cont.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyRotcossinPaged gmem_tiled_copy_rotary_paged;
+    auto gmem_thr_copy_rotary_paged = gmem_tiled_copy_rotary_paged.get_thread_slice(tidx);
+    typename Kernel_traits::GmemTiledCopyRotcossinContPaged gmem_tiled_copy_rotary_cont_paged;
+    auto gmem_thr_copy_rotary_cont_paged = gmem_tiled_copy_rotary_cont_paged.get_thread_slice(tidx);
     if constexpr (Append_KV) {
         // Even if we have MQA / GQA, all threadblocks responsible for the same KV head are writing to
         // gmem. Technically it's a race condition, but they all write the same content anyway, and it's safe.
@@ -700,10 +705,20 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
                                       Shape<Int<kBlockN>, Int<kHeadDim>>{},
                                       make_stride(params.rotary_dim / 2, _1{}));
-        Tensor tRgCos = gmem_thr_copy_rotary.partition_S(gCos);
-        Tensor tRgSin = gmem_thr_copy_rotary.partition_S(gSin);
+        Tensor tRgCos__ = gmem_thr_copy_rotary.partition_S(gCos);
+        Tensor tRgSin__ = gmem_thr_copy_rotary.partition_S(gSin);
         Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
         Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
+        
+        Tensor tRgCos_ = gmem_thr_copy_rotary_paged.partition_S(gCos);
+        Tensor tRgSin_ = gmem_thr_copy_rotary_paged.partition_S(gSin);
+        Tensor tRgCosCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gCosCont);
+        Tensor tRgSinCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gSinCont);
+        Tensor tRgCos = make_tensor(tRgCos_.data(), reshape_thread_tile(tRgCos_.layout()));
+        Tensor tRgSin = make_tensor(tRgSin_.data(), reshape_thread_tile(tRgSin_.layout()));
+        Tensor tRgCosCont__ = make_tensor(tRgCosCont_.data(), reshape_thread_tile(tRgCosCont_.layout()));
+        Tensor tRgSinCont__ = make_tensor(tRgSinCont_.data(), reshape_thread_tile(tRgSinCont_.layout()));
+        
         // if (cute::thread(0, 0)) { printf("rotary_cos_ptr = %p, gCos.data() = %p, tRgCos.data() = %p, rotary_dim = %d\n", params.rotary_cos_ptr, gCos.data(), tRgCos.data(), params.rotary_dim); }
         // if (cute::thread(8, 0)) { print_tensor(gCos); }
         // if (cute::thread(0, 0)) { print_tensor(tRgCos); }
@@ -735,21 +750,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         const int n_block_copy_min = std::max(n_block_min, binfo.seqlen_k_cache / kBlockN);
         auto tKgK_data = tKgK.data();
         auto tVgV_data = tVgV.data();
-KIN_PRINT(print(tKgKnew))
-KIN_PRINT(print(tKgK))
-KIN_PRINT(print(tKsK))
-KIN_PRINT(print(tKgK_))
-KIN_PRINT(print(tKgK__))
-KIN_PRINT(print(tKsK__))
-KIN_PRINT(print(tVgVnew))
-KIN_PRINT(print(tVgV))
-KIN_PRINT(print(tVsV))
-KIN_PRINT(print(tVgV_))
-KIN_PRINT(print(tVgV__))
-KIN_PRINT(print(tVsV__))
-KIN_PRINT(print(tRgCos))
-KIN_PRINT(print(tRgSin))
-KIN_PRINT(print(tKVcKV))
+
         for (int n_block = n_block_max - 1; n_block >= n_block_copy_min; n_block--) {
             flash::copy_w_min_idx<Is_even_K>(
                 tVgVnew, tVgV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
