@@ -707,18 +707,32 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                                       make_stride(params.rotary_dim / 2, _1{}));
         Tensor tRgCos__ = gmem_thr_copy_rotary.partition_S(gCos);
         Tensor tRgSin__ = gmem_thr_copy_rotary.partition_S(gSin);
-        Tensor tRgCosCont = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
-        Tensor tRgSinCont = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
+        Tensor tRgCosCont__ = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
+        Tensor tRgSinCont__ = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
         
         Tensor tRgCos_ = gmem_thr_copy_rotary_paged.partition_S(gCos);
         Tensor tRgSin_ = gmem_thr_copy_rotary_paged.partition_S(gSin);
         Tensor tRgCosCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gCosCont);
         Tensor tRgSinCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gSinCont);
+
         Tensor tRgCos = make_tensor(tRgCos_.data(), reshape_thread_tile(tRgCos_.layout()));
         Tensor tRgSin = make_tensor(tRgSin_.data(), reshape_thread_tile(tRgSin_.layout()));
-        Tensor tRgCosCont__ = make_tensor(tRgCosCont_.data(), reshape_thread_tile(tRgCosCont_.layout()));
-        Tensor tRgSinCont__ = make_tensor(tRgSinCont_.data(), reshape_thread_tile(tRgSinCont_.layout()));
-        
+        Tensor tRgCosCont = make_tensor(tRgCosCont_.data(), reshape_flatten_thread_tile(tRgCosCont_.layout()));
+        Tensor tRgSinCont = make_tensor(tRgSinCont_.data(), reshape_flatten_thread_tile(tRgSinCont_.layout()));
+
+        // {
+        //     if (threadIdx.x == 4 || threadIdx.x == 7)
+        //         fill(tRgCosCont__, 1.f * threadIdx.x);
+        //     __syncthreads();
+        //     KIN_PRINT(print_tensor(gCosCont))
+        // }
+
+        KIN_PRINT(print(tRgCosCont__))
+        KIN_PRINT(print(tRgCosCont_))
+        KIN_PRINT(print(tRgCosCont))
+        KIN_PRINT(print(tRgCos__))
+        KIN_PRINT(print(tRgCos_))
+        KIN_PRINT(print(tRgCos))
         // if (cute::thread(0, 0)) { printf("rotary_cos_ptr = %p, gCos.data() = %p, tRgCos.data() = %p, rotary_dim = %d\n", params.rotary_cos_ptr, gCos.data(), tRgCos.data(), params.rotary_dim); }
         // if (cute::thread(8, 0)) { print_tensor(gCos); }
         // if (cute::thread(0, 0)) { print_tensor(tRgCos); }
