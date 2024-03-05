@@ -18,11 +18,14 @@ from flash_attn.flash_attn_interface import _get_block_size_n
 from flash_attn.layers.rotary import apply_rotary_emb
 from test_flash_attn import attn_bias_from_alibi_slopes, construct_local_mask
 
+np.set_printoptions(threshold=np.inf)
+
 def bitwise_mask_half(v, mask: np.ndarray) -> torch.Tensor:
     assert mask[0].nbytes == 2
     assert v.dtype == torch.float16
     v_cpu = v.flatten().reshape(-1, mask.size).cpu().numpy()
     v_masked = np.bitwise_and(v_cpu.view(np.uint16), mask).view(np.half)
+    __import__('pdb').set_trace()
     v_masked_t = torch.from_numpy(v_masked).reshape(v.shape).cuda()
     return v_masked_t
 
