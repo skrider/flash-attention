@@ -438,7 +438,7 @@ __forceinline__ __device__ void copy(TiledCopy tiled_copy, Tensor<Engine0, Layou
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template <bool Is_even_K=true,
+template <bool Is_even_K=true, bool Clear_OOB_MN=false,
           typename Engine0, typename Layout0, typename Engine1, typename Layout1,
           typename Engine2, typename Layout2, typename Engine3, typename Layout3>
 __forceinline__ __device__ void copy_w_min_idx(Tensor<Engine0, Layout0> const &S,
@@ -462,6 +462,8 @@ __forceinline__ __device__ void copy_w_min_idx(Tensor<Engine0, Layout0> const &S
                     cute::copy(S(_, m, k), D(_, m, k));
                 }
             }
+        } else if (Clear_OOB_MN) {
+            cute::clear(D(_, m, _));
         }
     }
 }

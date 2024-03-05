@@ -25,7 +25,6 @@ def bitwise_mask_half(v, mask: np.ndarray) -> torch.Tensor:
     assert v.dtype == torch.float16
     v_cpu = v.flatten().reshape(-1, mask.size).cpu().numpy()
     v_masked = np.bitwise_and(v_cpu.view(np.uint16), mask).view(np.half)
-    __import__('pdb').set_trace()
     v_masked_t = torch.from_numpy(v_masked).reshape(v.shape).cuda()
     return v_masked_t
 
@@ -70,7 +69,7 @@ def attention_ref(
     dtype_og = q.dtype
     if mask is not None:
         assert q.dtype == torch.half
-        q = bitwise_mask_half(q, mask)
+        # q = bitwise_mask_half(q, mask)
         k = bitwise_mask_half(k, mask)
         v = bitwise_mask_half(v, mask)
     if upcast:
@@ -162,7 +161,7 @@ def attention_ref(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (16, 1024) ])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 1024) ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
