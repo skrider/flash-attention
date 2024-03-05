@@ -119,8 +119,8 @@
 #else
 #define HEADDIM_SWITCH(HEADDIM, ...)   \
   [&] {                                  \
-    TORCH_CHECK(HEADDIM == 64, "head dim temporarily restricted to 64");        \
-    constexpr static int kHeadDim = 64;  \
+    TORCH_CHECK(HEADDIM == 128, "head dim temporarily restricted");        \
+    constexpr static int kHeadDim = 128;  \
     return __VA_ARGS__();                \
   }()
 #endif
