@@ -125,15 +125,17 @@ struct Mask {
     };
 
     // Causal_mask: whether this particular iteration needs causal masking
-    template <bool Causal_mask=false, bool Is_even_MN=true, typename Engine, typename Layout>
+    template <bool Causal_mask=false, bool Is_even_MN=true, bool Page_fault_mask=false, typename Engine, typename Layout>
     __forceinline__ __device__ void apply_mask(Tensor<Engine, Layout> &tensor_,
                                                const int col_idx_offset_,
                                                const int row_idx_offset,
-                                               const int warp_row_stride) {
+                                               const int warp_row_stride,
+                                               const int* invalid_page_mask=nullptr,
+                                               const int page_block_size=0) {
         static_assert(!(Causal_mask && Is_local), "Cannot be both causal and local");
         static_assert(Layout::rank == 3, "Only support 3D Tensor");
         static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
-        static constexpr bool Need_masking = Has_alibi || Causal_mask || Is_local || !Is_even_MN;
+        static constexpr bool Need_masking = Has_alibi || Causal_mask || Is_local || !Is_even_MN || Page_fault_mask;
         // if (cute::thread0()) { printf("Has_alibi = %d, Causal_mask=%d, Is_local=%d, Is_even_MN = %d, Need_masking = %d\n", Has_alibi, Causal_mask, Is_local, Is_even_MN, Need_masking); }
         if constexpr (Need_masking) {
             // Reshape tensor_ from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
@@ -157,6 +159,12 @@ struct Mask {
                             }
                             if constexpr (!Is_even_MN) {
                                 if (col_idx >= max_seqlen_k) { tensor(mi, make_coord(j, nj)) = -INFINITY; }
+                            }
+                            if constexpr (Page_fault_mask) {
+                                int page_idx = col_idx / page_block_size;
+                                if (invalid_page_mask[page_idx]) {
+                                    tensor(mi, make_coord(j, nj)) = -INFINITY;
+                                }
                             }
                         }
                     }
@@ -198,6 +206,12 @@ struct Mask {
                                     // Causal and Local already handles MN masking
                                     if (col_idx >= max_seqlen_k) {
                                         tensor(make_coord(i, mi), make_coord(j, nj)) = -INFINITY;
+                                    }
+                                }
+                                if constexpr (Page_fault_mask) {
+                                    int page_idx = col_idx / page_block_size;
+                                    if (invalid_page_mask[page_idx]) {
+                                        tensor(mi, make_coord(j, nj)) = -INFINITY;
                                     }
                                 }
                             }

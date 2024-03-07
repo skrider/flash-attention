@@ -294,6 +294,19 @@ void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
     }
 }
 
+void set_params_ecc(Flash_fwd_params &params, c10::optional<at::Tensor> seq_ids) {
+    if (seq_ids.has_value()) {
+        TORCH_CHECK(seq_ids.value().dtype() == torch::kInt32, "seq_ids must have dtype int32");
+        CHECK_DEVICE(seq_ids.value());
+        CHECK_CONTIGUOUS(seq_ids.value());
+        params.seq_ids_ptr = seq_ids.value().data_ptr();
+        params.do_ecc = true;
+    } else {
+        params.do_ecc = false;
+        params.seq_ids_ptr = nullptr;
+    }
+}
+
 void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi_slopes_, int batch_size, int num_heads){
 #ifdef FLASHATTENTION_DISABLE_ALIBI
     TORCH_CHECK(!alibi_slopes_.has_value(), "This flash attention build does not support alibi.");
@@ -1209,7 +1222,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 int window_size_left,
                 int window_size_right,
                 bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
-                int num_splits
+                int num_splits,
+                c10::optional<at::Tensor> &seq_ids             // batch_size
                 ) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
@@ -1433,6 +1447,7 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     }
     params.page_block_size = page_block_size;
 
+    set_params_ecc(params, seq_ids);
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
 

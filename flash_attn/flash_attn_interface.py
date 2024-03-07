@@ -1091,6 +1091,7 @@ def flash_attn_with_kvcache(
     rotary_interleaved=True,
     alibi_slopes=None,
     num_splits=0,
+    seq_ids=None,
 ):
     """
     If k and v are not None, k_cache and v_cache will be updated *inplace* with the new values from
@@ -1205,5 +1206,6 @@ def flash_attn_with_kvcache(
         window_size[1],
         rotary_interleaved,
         num_splits,
+        seq_ids,
     )
     return out

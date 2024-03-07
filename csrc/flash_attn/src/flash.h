@@ -95,7 +95,8 @@ struct Flash_fwd_params : public Qkv_params {
     index_t vnew_head_stride;
 
     // Sequence IDS for ECC verification
-    void * __restrict__ seqids_ptr;
+    void * __restrict__ seq_ids_ptr;
+    bool do_ecc;
 
     // The cos and sin matrices for rotary embedding.
     void * __restrict__ rotary_cos_ptr;

@@ -488,11 +488,14 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // The thread index.
     const int tidx = threadIdx.x;
 
+    // the thread's page index
+    const int page_idx = ((tidx / Kernel_traits::kGmemThreadsPerRow) * Kernel_traits::kGmemRowsPerThread) / params.page_block_size;
+
     constexpr int kBlockM = Kernel_traits::kBlockM;
     constexpr int kBlockN = Kernel_traits::kBlockN;
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kNWarps = Kernel_traits::kNWarps;
-#if 0
+#if 1
     KIN_PRINT(print_traits<Kernel_traits>())
     KIN_PRINT(print_flash_fwd_params(params))
 #endif
@@ -508,6 +511,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // if (threadIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) { printf("Is_even_MN = %d, is_cumulativ = %d, seqlen_k_cache = %d, actual_seqlen_k = %d\n", Is_even_MN, params.is_seqlens_k_cumulative, binfo.seqlen_k_cache, binfo.actual_seqlen_k); }
     // if (threadIdx.x == 0 && blockIdx.y == 1 && blockIdx.z == 0) { printf("params.knew_ptr = %p, seqlen_k_cache + seqlen_knew = %d\n", params.knew_ptr, binfo.seqlen_k_cache + (params.knew_ptr == nullptr ? 0 : params.seqlen_knew)); }
     if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
+
+    const int seq_id = params.do_ecc ? reinterpret_cast<int *>(params.seq_ids_ptr)[bidb] : 0;
 
     const int n_blocks_per_split = ((params.seqlen_k + kBlockN - 1) / kBlockN + num_n_splits - 1) / num_n_splits;
     const int n_block_min = !Is_local
@@ -578,8 +583,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
           + (n_block_max - 1) * kBlockN * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride
         : (bidh / params.h_h_k_ratio) * params.v_head_stride;
 
-    
-
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
                             Shape<Int<kBlockM>, Int<kHeadDim>>{},
                             make_stride(params.q_row_stride, _1{}));
@@ -590,12 +593,19 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     Tensor gV = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.v_ptr) + row_offset_v),
                             Shape<Int<kBlockN>, Int<kHeadDim>>{},
                             make_stride(params.v_row_stride, _1{}));
-    Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
+                            
+    auto invalid_page_mask = reinterpret_cast<int*>(smem_);
+    if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
+        invalid_page_mask[threadIdx.x] = 0;
+    }
+
+    Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_ + Kernel_traits::maxPagesPerBlock * sizeof(int))),
                             typename Kernel_traits::SmemLayoutQ{});
     Tensor sK = make_tensor(sQ.data() + size(sQ), typename Kernel_traits::SmemLayoutKV{});
     Tensor sV = make_tensor(sK.data() + size(sK), typename Kernel_traits::SmemLayoutKV{});
     Tensor sVt = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data(), typename Kernel_traits::SmemLayoutVtransposedNoSwizzle{});
+
 
     typename Kernel_traits::GmemTiledCopyQKV gmem_tiled_copy_Q;
     auto gmem_thr_copy_Q = gmem_tiled_copy_Q.get_thread_slice(tidx);
@@ -744,37 +754,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     typename Kernel_traits::GmemTiledCopyRotcossinContPaged gmem_tiled_copy_rotary_cont_paged;
     auto gmem_thr_copy_rotary_cont_paged = gmem_tiled_copy_rotary_cont_paged.get_thread_slice(tidx);
     if constexpr (Append_KV) {
-        // Even if we have MQA / GQA, all threadblocks responsible for the same KV head are writing to
-        // gmem. Technically it's a race condition, but they all write the same content anyway, and it's safe.
-        // We want to do this so that all threadblocks can proceed right after they finish writing the KV cache.
-        const index_t row_offset_cossin = ((n_block_max - 1) * kBlockN) * (params.rotary_dim / 2);
-        Tensor gCos = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
-                                  make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gSin = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                  Shape<Int<kBlockN>, Int<kHeadDim / 2>>{},
-                                  make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gCosCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_cos_ptr) + row_offset_cossin),
-                                      Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                      make_stride(params.rotary_dim / 2, _1{}));
-        Tensor gSinCont = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.rotary_sin_ptr) + row_offset_cossin),
-                                      Shape<Int<kBlockN>, Int<kHeadDim>>{},
-                                      make_stride(params.rotary_dim / 2, _1{}));
-        Tensor tRgCos__ = gmem_thr_copy_rotary.partition_S(gCos);
-        Tensor tRgSin__ = gmem_thr_copy_rotary.partition_S(gSin);
-        Tensor tRgCosCont__ = gmem_thr_copy_rotary_cont.partition_S(gCosCont);
-        Tensor tRgSinCont__ = gmem_thr_copy_rotary_cont.partition_S(gSinCont);
-        
-        Tensor tRgCos_ = gmem_thr_copy_rotary_paged.partition_S(gCos);
-        Tensor tRgSin_ = gmem_thr_copy_rotary_paged.partition_S(gSin);
-        Tensor tRgCosCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gCosCont);
-        Tensor tRgSinCont_ = gmem_thr_copy_rotary_cont_paged.partition_S(gSinCont);
-
-        Tensor tRgCos = make_tensor(tRgCos_.data(), reshape_thread_tile(tRgCos_.layout()));
-        Tensor tRgSin = make_tensor(tRgSin_.data(), reshape_thread_tile(tRgSin_.layout()));
-        Tensor tRgCosCont = make_tensor(tRgCosCont_.data(), reshape_flatten_thread_tile(tRgCosCont_.layout()));
-        Tensor tRgSinCont = make_tensor(tRgSinCont_.data(), reshape_flatten_thread_tile(tRgSinCont_.layout()));
-
         const index_t row_offset_knew = binfo.k_offset(params.knew_batch_stride, params.knew_row_stride, bidb)
             + ((n_block_max - 1) * kBlockN) * params.knew_row_stride + (bidh / params.h_h_k_ratio) * params.knew_head_stride;
         const index_t row_offset_vnew = binfo.k_offset(params.vnew_batch_stride, params.vnew_row_stride, bidb)
@@ -808,10 +787,35 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tVgVnew, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
             );
             tVgVnew.data() = tVgVnew.data() + (-int(kBlockN * params.vnew_row_stride));
-            flash::copy_w_min_idx<Is_even_K /*Clear_OOB_MN=*/true>(
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
                 tKgKnew, tKsK, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
             );
             tKgKnew.data() = tKgKnew.data() + (-int(kBlockN * params.knew_row_stride));
+
+            cute::cp_async_fence();
+            cute::cp_async_wait<0>();
+            __syncthreads();
+
+            if (params.do_ecc) {
+                flash::swap_ecc(tKsK, seq_id);
+                flash::swap_ecc(tVsV, seq_id);
+            }
+
+            // round to the nearest multiple of page_block_size to ensure all the ECCs are written
+            // TODO this probably will have some edge cases for odd/large page sizes
+            // TODO only do this copy when allocating a new page
+            // TODO handle case where no page table
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
+                tKsK, tKgK, tKVcKV, tKVpKV, 
+                params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
+                binfo.seqlen_k_cache - n_block * kBlockN
+            );
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
+                tVsV, tVgV, tKVcKV, tKVpKV, 
+                params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
+                binfo.seqlen_k_cache - n_block * kBlockN
+            );
+
             if (block_table == nullptr) {
                 tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
@@ -835,6 +839,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                                        binfo.actual_seqlen_q - m_block * kBlockM);
 
     int n_block = n_block_max - 1;
+    // TODO ensure that no data race for getting the new KVs
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
@@ -867,19 +872,20 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     for (int masking_step = 0; masking_step < n_masking_steps; ++masking_step, --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        flash::cp_async_wait<0>();
-        __syncthreads();
+        flash::cp_async_wait<0>(); // K copy
 
+        int k_ecc = flash::swap_ecc(tKsK, 0);
+        if (k_ecc != seq_id) {
+            invalid_page_mask[page_idx] = 1;
+        }
+
+        __syncthreads();
+        
         // Advance gV
         if (masking_step > 0) {
             if (block_table == nullptr) {
                 tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
             } else {
-                // const int block_table_idx_cur = (n_block + 1) * kBlockN / params.page_block_size;
-                // const int block_table_offset_cur = (n_block + 1) * kBlockN - block_table_idx_cur * params.page_block_size;
-                // const int block_table_idx_next = n_block * kBlockN / params.page_block_size;
-                // const int block_table_offset_next = n_block * kBlockN - block_table_idx_next * params.page_block_size;
-                // tVgV.data() = tVgV.data() + (block_table[block_table_idx_next] - block_table[block_table_idx_cur]) * params.v_batch_stride + (block_table_offset_next - block_table_offset_cur) * params.v_row_stride;
                 tVgV.data() = tVgV.data() + flash::advance_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block + 1, params.page_block_size,
                     block_table, params.v_batch_stride, params.v_row_stride);
             }
@@ -898,14 +904,32 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
         // if (cute::thread0()) { print(acc_s); }
 
-        mask.template apply_mask<Is_causal, Is_even_MN>(
-            acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
+        flash::cp_async_wait<0>(); // V copy
+
+        int v_ecc = flash::swap_ecc(tVsV, 0);
+        if (v_ecc != seq_id) {
+            invalid_page_mask[page_idx] = 1;
+        }
+        
+        __syncthreads();
+
+#if 1
+        if (thread0()) {
+            printf("block %d invalid_page_mask = ", n_block);
+            for (int i = 0; i < Kernel_traits::maxPagesPerBlock; i++) 
+                printf("%d,", invalid_page_mask[i]);
+            printf("\n");
+        }
+#endif
+        mask.template apply_mask<Is_causal, Is_even_MN, true>(
+            acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
+            invalid_page_mask, params.page_block_size
         );
 
-        flash::cp_async_wait<0>();
-        int v_ecc = flash::swap_ecc(tVsV, 0);
-        int k_ecc = flash::swap_ecc(tKsK, 0);
         __syncthreads();
+        if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
+            invalid_page_mask[threadIdx.x] = 0;
+        }
 
         if (n_block > n_block_min) {
             // Advance gK
@@ -946,8 +970,16 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     for (; n_block >= n_block_min; --n_block) {
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
-        flash::cp_async_wait<0>();
+        flash::cp_async_wait<0>(); // K copy
+        
+        int k_ecc = flash::swap_ecc(tKsK, 0);
+        if (k_ecc != seq_id) {
+            // TODO see if simultaneous writes are bad
+            invalid_page_mask[page_idx] = 1;
+        }
+
         __syncthreads();
+
         // Advance gV
         if (block_table == nullptr) {
             tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
@@ -964,10 +996,35 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
 
         flash::cp_async_wait<0>();
-        // int v_ecc = flash::swap_ecc(tVsV, 0);
-        // int k_ecc = flash::swap_ecc(tKsK, 0);
-        // if (v_ecc == k_ecc) return;
+        
+        int v_ecc = flash::swap_ecc(tVsV, 0);
+        if (v_ecc != seq_id) {
+            invalid_page_mask[page_idx] = 1;
+        }
+        
         __syncthreads();
+        
+#if 1
+        if (thread0()) {
+            printf("block %d invalid_page_mask = ", n_block);
+            for (int i = 0; i < Kernel_traits::maxPagesPerBlock; i++) 
+                printf("%d, ", invalid_page_mask[i]);
+            printf("\n");
+        }
+#endif
+        mask.template apply_mask</*Causal_mask=*/false, /*Is_even_MN=*/true, /*Page_fault_mask=*/true>(
+            acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
+            invalid_page_mask, params.page_block_size
+        );
+
+        // TODO see if this syncthreads can be removed - needed to prevent resetting page mask before
+        // all masks have been applied
+        __syncthreads();
+
+        if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
+            invalid_page_mask[threadIdx.x] = 0;
+        }
+        
         if (n_block > n_block_min) {
             // Advance gK
             if (block_table == nullptr) {
@@ -982,9 +1039,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             cute::cp_async_fence();
         }
 
-        mask.template apply_mask</*Causal_mask=*/false>(
-            acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16
-        );
         softmax.template softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_local>(acc_s, acc_o, params.scale_softmax_log2);
 
         Tensor rP = flash::convert_type<Element>(acc_s);

@@ -161,7 +161,7 @@ def attention_ref(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 1024) ])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (64, 256 + 128) ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
@@ -188,15 +188,15 @@ def test_flash_attn_page_fault(
     device = "cuda"
     # set seed
     torch.random.manual_seed(0)
-    batch_size = 2
+    batch_size = 1
     batch_size_cache = batch_size if not has_batch_idx else batch_size * 2
-    nheads = 32
+    nheads = 1
     # rotary_dim must be a multiple of 16, and must be <= d
     rotary_dim = math.floor(int(rotary_fraction * d) / 16) * 16
     nheads_k = nheads if mha_type == "mha" else (1 if mha_type == "mqa" else 3)
     assert nheads % nheads_k == 0
     window_size = (-1, -1) if not local else torch.randint(0, seqlen_k, (2,))
-    q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype)
+    q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype) * d
     seqlen_new = seqlen_q if seqlen_new_eq_seqlen_q else torch.randint(1, seqlen_q + 1, (1,)).item()
     if new_kv:
         k = torch.randn(batch_size, seqlen_new, nheads_k, d, device=device, dtype=dtype)
@@ -211,7 +211,7 @@ def test_flash_attn_page_fault(
         num_blocks = math.ceil(seqlen_k / paged_kv_block_size) * batch_size * 3
         k_cache_paged = torch.randn(
             num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
-        )
+        ) * d
         v_cache_paged = torch.randn(
             num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
         )
@@ -230,6 +230,8 @@ def test_flash_attn_page_fault(
             "(b nblocks) block_size ... -> b (nblocks block_size) ...",
             b=batch_size,
         )[:, :seqlen_k]
+    seq_ids = torch.arange(batch_size, device=device, dtype=torch.int32) + 112342
+
     cache_seqlens = torch.randint(
         0 if new_kv else 1,
         # If we don't use seqlen_q in the case of causal and rotary, cos/sin won't be long enough
@@ -286,6 +288,7 @@ def test_flash_attn_page_fault(
         rotary_interleaved=rotary_interleaved,
         alibi_slopes=alibi_slopes,
         num_splits=num_splits,
+        seq_ids=seq_ids,
     )
     out_ref, _ = attention_ref(
         q_ro,

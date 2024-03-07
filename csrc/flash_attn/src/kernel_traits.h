@@ -104,9 +104,11 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemCopyAtomO = Copy_Atom<DefaultCopy, Element>;
     using SmemCopyAtomOaccum = Copy_Atom<DefaultCopy, ElementAccum>;
 
+    static constexpr int maxPagesPerBlock = kBlockN / 16;
+    
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
+    static constexpr int kSmemSize = (Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize) + maxPagesPerBlock * sizeof(int);
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
@@ -137,7 +139,7 @@ struct Flash_fwd_kernel_traits : public Base {
     // Here we assign a contiguous tile to each thread, rather than a 1x8 row every 
     // (kNThreads / kGmemThreadsPerRow) rows, ensuring that the elements assigned to each thread
     // do not cross a page boundary. This way, each thread need only fetch 1 page index per
-    // mainloop iteration. R>udimentary testing shows no slowdown.
+    // mainloop iteration.
     using GmemTiledCopyQKVPaged = decltype(
         make_tiled_copy(Copy_Atom<Gmem_copy_struct, Element>{},
                         GmemLayoutAtom{},
