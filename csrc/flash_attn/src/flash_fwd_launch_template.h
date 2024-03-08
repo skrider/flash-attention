@@ -81,13 +81,13 @@ void run_flash_splitkv_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     dim3 grid(num_m_block, params.num_splits > 1 ? params.num_splits : params.b, params.num_splits > 1 ? params.b * params.h : params.h);
     const bool is_even_MN = params.cu_seqlens_q == nullptr && params.cu_seqlens_k == nullptr && params.seqlen_k % Kernel_traits::kBlockN == 0 && params.seqlen_q % Kernel_traits::kBlockM == 0;
     const bool is_even_K = params.d == Kernel_traits::kHeadDim;
-    constexpr static bool Is_causal = true; TORCH_CHECK(params.is_causal == Is_causal, "TEMP");
-    constexpr static bool IsEvenMNConst = false; TORCH_CHECK(is_even_MN == IsEvenMNConst, "TEMP");
-    constexpr static bool IsEvenKConst = true; TORCH_CHECK(is_even_K == IsEvenKConst, "TEMP");
-    constexpr static bool Is_local = false; TORCH_CHECK((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP");
-    constexpr static bool Split = false; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP");
-    constexpr static bool Append_KV = true; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP");
-    constexpr static bool Has_alibi = false; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP");
+    constexpr static bool Is_causal = true; TORCH_CHECK(params.is_causal == Is_causal, "TEMP 3");
+    constexpr static bool IsEvenMNConst = false; TORCH_CHECK(is_even_MN == IsEvenMNConst, "TEMP 4");
+    constexpr static bool IsEvenKConst = true; TORCH_CHECK(is_even_K == IsEvenKConst, "TEMP 5");
+    constexpr static bool Is_local = false; TORCH_CHECK((params.window_size_left >= 0 || params.window_size_right >= 0) && !Is_causal == Is_local, "TEMP 6");
+    constexpr static bool Split = false; TORCH_CHECK(params.num_splits > 1 == Split, "TEMP 7");
+    constexpr static bool Append_KV = true; TORCH_CHECK(params.knew_ptr != nullptr == Append_KV, "TEMP 8");
+    constexpr static bool Has_alibi = false; TORCH_CHECK(params.alibi_slopes_ptr != nullptr == Has_alibi, "TEMP 9");
     // If Append_KV, then we must have seqlen_offsets, which means cu_seqlens_k != nullptr.
     // If not IsEvenKConst, we also set IsEvenMNConst to false to reduce number of templates.
     // If Is_local, set Is_causal to false

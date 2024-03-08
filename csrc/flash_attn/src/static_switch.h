@@ -17,110 +17,141 @@
 
 #define BOOL_SWITCH(COND, CONST_NAME, ...)      \
   [&] {                                         \
-    if (COND) {                                 \
+    if (COND)                                   \
+    {                                           \
       constexpr static bool CONST_NAME = true;  \
       return __VA_ARGS__();                     \
-    } else {                                    \
+    }                                           \
+    else                                        \
+    {                                           \
       constexpr static bool CONST_NAME = false; \
       return __VA_ARGS__();                     \
     }                                           \
   }()
 
 #ifdef FLASHATTENTION_DISABLE_DROPOUT
-  #define DROPOUT_SWITCH(COND, CONST_NAME, ...) \
-  [&] {                                         \
-    constexpr static bool CONST_NAME = false;   \
-    return __VA_ARGS__();                       \
+#define DROPOUT_SWITCH(COND, CONST_NAME, ...) \
+  [&] {                                       \
+    constexpr static bool CONST_NAME = false; \
+    return __VA_ARGS__();                     \
   }()
 #else
-  #define DROPOUT_SWITCH BOOL_SWITCH
+#define DROPOUT_SWITCH BOOL_SWITCH
 #endif
 
 #ifdef FLASHATTENTION_DISABLE_ALIBI
-  #define ALIBI_SWITCH(COND, CONST_NAME, ...)   \
-  [&] {                                         \
-    constexpr static bool CONST_NAME = false;   \
-    return __VA_ARGS__();                       \
+#define ALIBI_SWITCH(COND, CONST_NAME, ...)   \
+  [&] {                                       \
+    constexpr static bool CONST_NAME = false; \
+    return __VA_ARGS__();                     \
   }()
 #else
-  #define ALIBI_SWITCH BOOL_SWITCH
+#define ALIBI_SWITCH BOOL_SWITCH
 #endif
 
 #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
-  #define EVENK_SWITCH(COND, CONST_NAME, ...)   \
-  [&] {                                         \
-    constexpr static bool CONST_NAME = true;    \
-    return __VA_ARGS__();                       \
+#define EVENK_SWITCH(COND, CONST_NAME, ...)  \
+  [&] {                                      \
+    constexpr static bool CONST_NAME = true; \
+    return __VA_ARGS__();                    \
   }()
 #else
-  #define EVENK_SWITCH BOOL_SWITCH
+#define EVENK_SWITCH BOOL_SWITCH
 #endif
 
 #ifdef FLASHATTENTION_DISABLE_LOCAL
-  #define LOCAL_SWITCH(COND, CONST_NAME, ...)   \
-  [&] {                                         \
-    constexpr static bool CONST_NAME = false;    \
-    return __VA_ARGS__();                       \
+#define LOCAL_SWITCH(COND, CONST_NAME, ...)   \
+  [&] {                                       \
+    constexpr static bool CONST_NAME = false; \
+    return __VA_ARGS__();                     \
   }()
 #else
-  #define LOCAL_SWITCH BOOL_SWITCH
+#define LOCAL_SWITCH BOOL_SWITCH
 #endif
 
 #if 0
 #define FP16_SWITCH(COND, ...)               \
   [&] {                                      \
-    if (COND) {                              \
+    if (COND)                                \
+    {                                        \
       using elem_type = cutlass::half_t;     \
       return __VA_ARGS__();                  \
-    } else {                                 \
+    }                                        \
+    else                                     \
+    {                                        \
       using elem_type = cutlass::bfloat16_t; \
       return __VA_ARGS__();                  \
     }                                        \
   }()
 #else
-#define FP16_SWITCH(COND, ...)               \
-  [&] {                                      \
+#define FP16_SWITCH(COND, ...)                           \
+  [&] {                                                  \
     TORCH_CHECK(COND, "temporarily only supports fp16"); \
-    using elem_type = cutlass::half_t;     \
-    return __VA_ARGS__();                  \
+    using elem_type = cutlass::half_t;                   \
+    return __VA_ARGS__();                                \
   }()
 #endif
 
-
 #if 0
-#define HEADDIM_SWITCH(HEADDIM, ...)   \
+#define HEADDIM_SWITCH(HEADDIM, ...)       \
   [&] {                                    \
-    if (HEADDIM <= 32) {                   \
+    if (HEADDIM <= 32)                     \
+    {                                      \
       constexpr static int kHeadDim = 32;  \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 64) {            \
+    }                                      \
+    else if (HEADDIM <= 64)                \
+    {                                      \
       constexpr static int kHeadDim = 64;  \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 96) {            \
+    }                                      \
+    else if (HEADDIM <= 96)                \
+    {                                      \
       constexpr static int kHeadDim = 96;  \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 128) {           \
+    }                                      \
+    else if (HEADDIM <= 128)               \
+    {                                      \
       constexpr static int kHeadDim = 128; \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 160) {           \
+    }                                      \
+    else if (HEADDIM <= 160)               \
+    {                                      \
       constexpr static int kHeadDim = 160; \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 192) {           \
+    }                                      \
+    else if (HEADDIM <= 192)               \
+    {                                      \
       constexpr static int kHeadDim = 192; \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 224) {           \
+    }                                      \
+    else if (HEADDIM <= 224)               \
+    {                                      \
       constexpr static int kHeadDim = 224; \
       return __VA_ARGS__();                \
-    } else if (HEADDIM <= 256) {           \
+    }                                      \
+    else if (HEADDIM <= 256)               \
+    {                                      \
       constexpr static int kHeadDim = 256; \
       return __VA_ARGS__();                \
     }                                      \
   }()
 #else
-#define HEADDIM_SWITCH(HEADDIM, ...)   \
-  [&] {                                  \
-    TORCH_CHECK(HEADDIM == 128, "head dim temporarily restricted");        \
-    constexpr static int kHeadDim = 128;  \
-    return __VA_ARGS__();                \
+#define HEADDIM_SWITCH(HEADDIM, ...)                         \
+  [&] {                                                      \
+    if (HEADDIM <= 64)                                       \
+    {                                                        \
+      constexpr static int kHeadDim = 64;                    \
+      return __VA_ARGS__();                                  \
+    }                                                        \
+    else if (HEADDIM <= 128)                                 \
+    {                                                        \
+      constexpr static int kHeadDim = 128;                   \
+      return __VA_ARGS__();                                  \
+    }                                                        \
+    else                                                     \
+    {                                                        \
+      TORCH_CHECK(false, "head dim temporarily restricted"); \
+    }                                                        \
   }()
 #endif

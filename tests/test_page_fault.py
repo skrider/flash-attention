@@ -19,6 +19,7 @@ from flash_attn.layers.rotary import apply_rotary_emb
 from test_flash_attn import attn_bias_from_alibi_slopes, construct_local_mask
 
 np.set_printoptions(threshold=np.inf)
+torch.set_printoptions(threshold=np.inf)
 
 def bitwise_mask_half(v, mask: np.ndarray) -> torch.Tensor:
     assert mask[0].nbytes == 2
@@ -140,11 +141,13 @@ def attention_ref(
 @pytest.mark.parametrize("paged_kv_block_size", [16])
 # @pytest.mark.parametrize("has_batch_idx", [False, True])
 @pytest.mark.parametrize("has_batch_idx", [False])
+@pytest.mark.parametrize("mark_keys", [False])
+@pytest.mark.parametrize("niter", [2])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
 # @pytest.mark.parametrize('d', [56, 80])
-@pytest.mark.parametrize("d", [128])
+@pytest.mark.parametrize("d", [64])
 # @pytest.mark.parametrize(
 #     "seqlen_q,seqlen_k",
 #     [
@@ -161,10 +164,12 @@ def attention_ref(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (64, 256 + 128) ])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 120) ])
+@pytest.mark.parametrize('seqlen_new', [ 56 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
+    seqlen_new,
     d,
     has_batch_idx,
     paged_kv_block_size,
@@ -177,8 +182,12 @@ def test_flash_attn_page_fault(
     new_kv,
     mha_type,
     num_splits,
+    mark_keys,
+    niter,
     dtype,
 ):
+    if not new_kv and niter > 1:
+        pytest.skip()
     if seqlen_q > seqlen_k and new_kv:
         pytest.skip()
     if not new_kv and rotary_fraction > 0.0:
@@ -197,10 +206,13 @@ def test_flash_attn_page_fault(
     assert nheads % nheads_k == 0
     window_size = (-1, -1) if not local else torch.randint(0, seqlen_k, (2,))
     q = torch.randn(batch_size, seqlen_q, nheads, d, device=device, dtype=dtype) * d
-    seqlen_new = seqlen_q if seqlen_new_eq_seqlen_q else torch.randint(1, seqlen_q + 1, (1,)).item()
     if new_kv:
         k = torch.randn(batch_size, seqlen_new, nheads_k, d, device=device, dtype=dtype)
         v = torch.randn(batch_size, seqlen_new, nheads_k, d, device=device, dtype=dtype)
+        if mark_keys:
+            for i in range(seqlen_new):
+                k[:, i].fill_(-1.0 * i)
+                v[:, i].fill_(-1.0 * i)
     else:
         k, v = None, None
     if paged_kv_block_size is None:
@@ -230,18 +242,28 @@ def test_flash_attn_page_fault(
             "(b nblocks) block_size ... -> b (nblocks block_size) ...",
             b=batch_size,
         )[:, :seqlen_k]
-    seq_ids = torch.arange(batch_size, device=device, dtype=torch.int32) + 112342
+        if mark_keys:
+            for i in range(batch_size):
+                for bn in range(num_blocks):
+                    block_idx = block_table[i, bn]
+                    for j in range(paged_kv_block_size):
+                        k_cache_paged[block_idx, j].fill_(1.0 * (bn * paged_kv_block_size + j))
+                        v_cache_paged[block_idx, j].fill_(1.0 * (bn * paged_kv_block_size + j))
 
-    cache_seqlens = torch.randint(
-        0 if new_kv else 1,
-        # If we don't use seqlen_q in the case of causal and rotary, cos/sin won't be long enough
-        (seqlen_k - (seqlen_q if (causal or local) and rotary_dim > 1 else seqlen_new) + 1)
-        if new_kv
-        else (seqlen_k + 1),
-        (batch_size,),
-        dtype=torch.int32,
-        device=device,
-    )
+    # seq_ids = torch.arange(batch_size, device=device, dtype=torch.int32) + 112342
+    seq_ids = torch.ones(batch_size, device=device, dtype=torch.int32) * 0xefffffff
+
+    # cache_seqlens = torch.randint(
+    #     0 if new_kv else 1,
+    #     # If we don't use seqlen_q in the case of causal and rotary, cos/sin won't be long enough
+    #     (seqlen_k - (seqlen_q if (causal or local) and rotary_dim > 1 else seqlen_new) + 1)
+    #     if new_kv
+    #     else (seqlen_k + 1),
+    #     (batch_size,),
+    #     dtype=torch.int32,
+    #     device=device,
+    # )
+    cache_seqlens = torch.ones((batch_size,), dtype=torch.int32, device=device) * (seqlen_k - seqlen_new)
     arange = rearrange(torch.arange(seqlen_k, device=device), "s -> 1 s")
     cache_seqlens_expanded = rearrange(cache_seqlens, "b -> b 1")
     key_padding_mask = arange < cache_seqlens_expanded + (seqlen_new if new_kv else 0)
@@ -258,10 +280,9 @@ def test_flash_attn_page_fault(
         )
     else:
         alibi_slopes, attn_bias = None, None
-    # cache_seqlens = torch.tensor([64], dtype=torch.int32, device=device)
+    # cache_seqlens = torch.tensor([32], dtype=torch.int32, device=device)
     cos, sin = None, None
     q_ro, k_ro = q, k
-    # k_cache[:, 64:] = -1
     k_cache_ref = (k_cache if not has_batch_idx else k_cache[cache_batch_idx]).clone()
     v_cache_ref = (v_cache if not has_batch_idx else v_cache[cache_batch_idx]).clone()
     if new_kv:
@@ -272,24 +293,34 @@ def test_flash_attn_page_fault(
         v_cache_ref[update_mask] = rearrange(v, "b s ... -> (b s) ...")
     k_cache_rep = repeat(k_cache_ref, "b s h d -> b s (h g) d", g=nheads // nheads_k)
     v_cache_rep = repeat(v_cache_ref, "b s h d -> b s (h g) d", g=nheads // nheads_k)
-    out = flash_attn_with_kvcache(
-        q,
-        k_cache if paged_kv_block_size is None else k_cache_paged,
-        v_cache if paged_kv_block_size is None else v_cache_paged,
-        k,
-        v,
-        rotary_cos=cos,
-        rotary_sin=sin,
-        cache_seqlens=cache_seqlens,
-        cache_batch_idx=cache_batch_idx,
-        block_table=block_table,
-        causal=causal,
-        window_size=window_size,
-        rotary_interleaved=rotary_interleaved,
-        alibi_slopes=alibi_slopes,
-        num_splits=num_splits,
-        seq_ids=seq_ids,
-    )
+    assert seqlen_new % niter == 0
+    for i in range(niter):
+        k_new_start = (seqlen_new // niter) * i
+        k_new_len = seqlen_new // niter
+        print("RUN", i)
+        out = flash_attn_with_kvcache(
+            q,
+            k_cache if paged_kv_block_size is None else k_cache_paged,
+            v_cache if paged_kv_block_size is None else v_cache_paged,
+            k[:, k_new_start:k_new_start + k_new_len],
+            v[:, k_new_start:k_new_start + k_new_len],
+            rotary_cos=cos,
+            rotary_sin=sin,
+            cache_seqlens=cache_seqlens,
+            cache_batch_idx=cache_batch_idx,
+            block_table=block_table,
+            causal=causal,
+            window_size=window_size,
+            rotary_interleaved=rotary_interleaved,
+            alibi_slopes=alibi_slopes,
+            num_splits=num_splits,
+            seq_ids=seq_ids,
+        )
+        torch.cuda.synchronize()
+        __import__('pdb').set_trace()
+
+        cache_seqlens += k_new_len
+    
     out_ref, _ = attention_ref(
         q_ro,
         k_cache_rep,

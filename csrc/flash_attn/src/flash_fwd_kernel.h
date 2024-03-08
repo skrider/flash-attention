@@ -512,7 +512,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // if (threadIdx.x == 0 && blockIdx.y == 1 && blockIdx.z == 0) { printf("params.knew_ptr = %p, seqlen_k_cache + seqlen_knew = %d\n", params.knew_ptr, binfo.seqlen_k_cache + (params.knew_ptr == nullptr ? 0 : params.seqlen_knew)); }
     if (m_block * kBlockM >= binfo.actual_seqlen_q) return;
 
-    const int seq_id = params.do_ecc ? reinterpret_cast<int *>(params.seq_ids_ptr)[bidb] : 0;
+    const uint32_t seq_id = params.do_ecc ? reinterpret_cast<uint32_t *>(params.seq_ids_ptr)[bidb] : 0;
 
     const int n_blocks_per_split = ((params.seqlen_k + kBlockN - 1) / kBlockN + num_n_splits - 1) / num_n_splits;
     const int n_block_min = !Is_local
@@ -745,14 +745,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     // Prologue
 
     // Copy from Knew to K, optionally apply rotary embedding.
-    typename Kernel_traits::GmemTiledCopyRotcossin gmem_tiled_copy_rotary;
-    auto gmem_thr_copy_rotary = gmem_tiled_copy_rotary.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyRotcossinCont gmem_tiled_copy_rotary_cont;
-    auto gmem_thr_copy_rotary_cont = gmem_tiled_copy_rotary_cont.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyRotcossinPaged gmem_tiled_copy_rotary_paged;
-    auto gmem_thr_copy_rotary_paged = gmem_tiled_copy_rotary_paged.get_thread_slice(tidx);
-    typename Kernel_traits::GmemTiledCopyRotcossinContPaged gmem_tiled_copy_rotary_cont_paged;
-    auto gmem_thr_copy_rotary_cont_paged = gmem_tiled_copy_rotary_cont_paged.get_thread_slice(tidx);
     if constexpr (Append_KV) {
         const index_t row_offset_knew = binfo.k_offset(params.knew_batch_stride, params.knew_row_stride, bidb)
             + ((n_block_max - 1) * kBlockN) * params.knew_row_stride + (bidh / params.h_h_k_ratio) * params.knew_head_stride;
@@ -796,26 +788,26 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             cute::cp_async_wait<0>();
             __syncthreads();
 
-            if (params.do_ecc) {
-                flash::swap_ecc(tKsK, seq_id);
-                flash::swap_ecc(tVsV, seq_id);
-            }
+            flash::swap_ecc(tKsK, seq_id);
+            flash::swap_ecc(tVsV, seq_id);
 
             // round to the nearest multiple of page_block_size to ensure all the ECCs are written
             // TODO this probably will have some edge cases for odd/large page sizes
             // TODO only do this copy when allocating a new page
             // TODO handle case where no page table
-            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
                 tKsK, tKgK, tKVcKV, tKVpKV, 
                 params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
+                //binfo.actual_seqlen_k - n_block * kBlockN,
                 binfo.seqlen_k_cache - n_block * kBlockN
             );
-            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
                 tVsV, tVgV, tKVcKV, tKVpKV, 
                 params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
+                //binfo.actual_seqlen_k - n_block * kBlockN,
                 binfo.seqlen_k_cache - n_block * kBlockN
             );
-
+            
             if (block_table == nullptr) {
                 tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
                 tKgK.data() = tKgK.data() + (-int(kBlockN * params.k_row_stride));
@@ -839,7 +831,6 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                                        binfo.actual_seqlen_q - m_block * kBlockM);
 
     int n_block = n_block_max - 1;
-    // TODO ensure that no data race for getting the new KVs
     // We don't need to clear the sK smem tiles since we'll mask out the scores anyway.
     flash::copy<Is_even_MN, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV,
                                        binfo.actual_seqlen_k - n_block * kBlockN);
@@ -874,7 +865,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         clear(acc_s);
         flash::cp_async_wait<0>(); // K copy
 
-        int k_ecc = flash::swap_ecc(tKsK, 0);
+        auto k_ecc = flash::swap_ecc(tKsK, 0);
         if (k_ecc != seq_id) {
             invalid_page_mask[page_idx] = 1;
         }
@@ -893,7 +884,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         } else {
             // Clear the smem tiles to account for predicated off loads
             flash::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/true>(
-                gmem_tiled_copy_KV, tVgV, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN
+                gmem_tiled_copy_KV, tVgV, tVsV, tKVcKV, tKVpKV, 
+                (((binfo.actual_seqlen_k - n_block * kBlockN) + params.page_block_size - 1) / params.page_block_size) * params.page_block_size
             );
         }
         cute::cp_async_fence();
@@ -906,7 +898,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
         flash::cp_async_wait<0>(); // V copy
 
-        int v_ecc = flash::swap_ecc(tVsV, 0);
+        auto v_ecc = flash::swap_ecc(tVsV, 0);
         if (v_ecc != seq_id) {
             invalid_page_mask[page_idx] = 1;
         }
@@ -915,7 +907,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
 #if 1
         if (thread0()) {
-            printf("block %d invalid_page_mask = ", n_block);
+            print_tensor(sV);
+            printf("mask block %d invalid_page_mask = ", n_block);
             for (int i = 0; i < Kernel_traits::maxPagesPerBlock; i++) 
                 printf("%d,", invalid_page_mask[i]);
             printf("\n");
@@ -939,6 +932,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 tKgK.data() = tKgK.data() + flash::advance_thread_kv_page_slice_offset<Kernel_traits>(tidx, n_block, params.page_block_size, 
                     block_table, params.k_batch_stride, params.k_row_stride);
             }
+            // TODO see if we are always copying the entire page
             flash::copy</*Is_even_MN=*/true, Is_even_K>(gmem_tiled_copy_KV, tKgK, tKsK, tKVcKV, tKVpKV);
             // This cp_async_fence needs to be in the if block, otherwise the synchronization
             // isn't right and we get race conditions.
@@ -972,7 +966,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         clear(acc_s);
         flash::cp_async_wait<0>(); // K copy
         
-        int k_ecc = flash::swap_ecc(tKsK, 0);
+        auto k_ecc = flash::swap_ecc(tKsK, 0);
         if (k_ecc != seq_id) {
             // TODO see if simultaneous writes are bad
             invalid_page_mask[page_idx] = 1;
@@ -997,7 +991,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 
         flash::cp_async_wait<0>();
         
-        int v_ecc = flash::swap_ecc(tVsV, 0);
+        auto v_ecc = flash::swap_ecc(tVsV, 0);
         if (v_ecc != seq_id) {
             invalid_page_mask[page_idx] = 1;
         }
@@ -1006,9 +1000,10 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         
 #if 1
         if (thread0()) {
-            printf("block %d invalid_page_mask = ", n_block);
+            print_tensor(sV);
+            printf("nomask block %d invalid_page_mask = ", n_block);
             for (int i = 0; i < Kernel_traits::maxPagesPerBlock; i++) 
-                printf("%d, ", invalid_page_mask[i]);
+                printf("%d,", invalid_page_mask[i]);
             printf("\n");
         }
 #endif
