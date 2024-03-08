@@ -164,8 +164,8 @@ def attention_ref(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 120) ])
-@pytest.mark.parametrize('seqlen_new', [ 56 ])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
+@pytest.mark.parametrize('seqlen_new', [ 128 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,

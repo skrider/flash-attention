@@ -495,7 +495,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     constexpr int kBlockN = Kernel_traits::kBlockN;
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kNWarps = Kernel_traits::kNWarps;
-#if 1
+#if 0
     KIN_PRINT(print_traits<Kernel_traits>())
     KIN_PRINT(print_flash_fwd_params(params))
 #endif
@@ -905,7 +905,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         
         __syncthreads();
 
-#if 1
+#if 0
         if (thread0()) {
             print_tensor(sV);
             printf("mask block %d invalid_page_mask = ", n_block);
@@ -998,7 +998,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         
         __syncthreads();
         
-#if 1
+#if 0
         if (thread0()) {
             print_tensor(sV);
             printf("nomask block %d invalid_page_mask = ", n_block);

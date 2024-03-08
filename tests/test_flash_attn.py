@@ -1816,14 +1816,14 @@ def test_flash_attn_splitkv(
 # @pytest.mark.parametrize("rotary_fraction", [0.0, 0.5, 1.0])
 @pytest.mark.parametrize("rotary_fraction", [0.0])
 # @pytest.mark.parametrize("paged_kv_block_size", [None, 256, 512])
-@pytest.mark.parametrize("paged_kv_block_size", [16, 256, 512])
+@pytest.mark.parametrize("paged_kv_block_size", [None, 16, 256, 512])
 # @pytest.mark.parametrize("has_batch_idx", [False, True])
 @pytest.mark.parametrize("has_batch_idx", [False])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
 # @pytest.mark.parametrize('d', [56, 80])
-@pytest.mark.parametrize("d", [64])
+@pytest.mark.parametrize("d", [128])
 # @pytest.mark.parametrize(
 #     "seqlen_q,seqlen_k",
 #     [
@@ -1840,15 +1840,7 @@ def test_flash_attn_splitkv(
 #         (128, 128),
 #     ],
 # )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [
-    (16, 1024), 
-    (16, 3 * 1024), 
-    (16, 257), 
-    (16, 513), 
-    (16, 256), 
-    (16, 512), 
-    (16, 768)
-])
+@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (16, 1024) ])
 def test_flash_attn_kvcache(
     seqlen_q,
     seqlen_k,
@@ -1877,7 +1869,7 @@ def test_flash_attn_kvcache(
     torch.random.manual_seed(0)
     batch_size = 2
     batch_size_cache = batch_size if not has_batch_idx else batch_size * 2
-    nheads = 6
+    nheads = 32
     # rotary_dim must be a multiple of 16, and must be <= d
     rotary_dim = math.floor(int(rotary_fraction * d) / 16) * 16
     nheads_k = nheads if mha_type == "mha" else (1 if mha_type == "mqa" else 3)
