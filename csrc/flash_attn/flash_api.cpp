@@ -244,7 +244,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
         bool is_causal,
         int window_size_left,
         int window_size_right,
-        const bool return_softmax) {
+        const bool return_softmax,
+        c10::optional<at::Generator> gen_) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
@@ -252,6 +253,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
     bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     TORCH_CHECK(is_sm90 || is_sm8x, "FlashAttention only supports Ampere GPUs or newer.");
     // We will support Turing in the near future
+    //
     // TORCH_CHECK(is_sm90 || is_sm8x || is_sm75, "FlashAttention only supports Turing GPUs or newer.");
 
     auto q_dtype = q.dtype();
@@ -391,7 +393,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x head_size
         q_padded = q_padded.transpose(1, 2).reshape({batch_size, 1, num_heads_k * seqlen_q, head_size_og});
         softmax_lse = softmax_lse.reshape({batch_size, num_heads_k * seqlen_q, 1});
     }
-    return {out, q_padded, k_padded, v_padded, out_padded, softmax_lse, p};
+    // temporarily return p instead of dropout state to keep api the same
+    return {out, q_padded, k_padded, v_padded, out_padded, softmax_lse, p, p};
 }
 
 
