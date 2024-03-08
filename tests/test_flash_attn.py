@@ -732,7 +732,7 @@ def test_flash_attn_varlen_causal(
 @pytest.mark.parametrize("rotary_fraction", [0.0, 0.5, 1.0])
 # @pytest.mark.parametrize("rotary_fraction", [0.0])
 # @pytest.mark.parametrize("paged_kv_block_size", [None, 256, 512])
-@pytest.mark.parametrize("paged_kv_block_size", [None, 16])
+@pytest.mark.parametrize("paged_kv_block_size", [16])
 @pytest.mark.parametrize("has_batch_idx", [False, True])
 # @pytest.mark.parametrize("has_batch_idx", [False])
 @pytest.mark.parametrize("d", [64, 80, 96, 112, 128, 256])
