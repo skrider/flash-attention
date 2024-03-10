@@ -134,9 +134,10 @@ if not SKIP_CUDA_BUILD:
             name="flash_attn_2_cuda",
             sources=[
                 "csrc/flash_attn/flash_api.cpp",
-                "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
-                "csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
+               # "csrc/flash_attn/src/flash_fwd_hdim128_fp16_sm80.cu",
+               # "csrc/flash_attn/src/flash_bwd_hdim128_fp16_sm80.cu",
                 "csrc/flash_attn/src/flash_fwd_split_hdim128_fp16_sm80.cu",
+                "csrc/flash_attn/src/flash_fwd_split_hdim64_fp16_sm80.cu",
             ],
             extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"] + generator_flag,

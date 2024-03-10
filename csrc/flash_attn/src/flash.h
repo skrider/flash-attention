@@ -96,6 +96,9 @@ struct Flash_fwd_params : public Qkv_params {
 
     // Sequence IDS for ECC verification
     void * __restrict__ seq_ids_ptr;
+
+    // Mask where 1s indicate the presence of a page fault
+    void * __restrict__ page_fault_mask;
     bool do_ecc;
 
     // The cos and sin matrices for rotary embedding.

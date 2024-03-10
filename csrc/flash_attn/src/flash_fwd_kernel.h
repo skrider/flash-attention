@@ -148,8 +148,13 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                             
     auto invalid_page_mask = reinterpret_cast<int*>(smem_);
     if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
-        invalid_page_mask[threadIdx.x] = 0;
+        if (threadIdx.x >= kBlockN / params.page_block_size) {
+            invalid_page_mask[threadIdx.x] = 2;
+        } else {
+            invalid_page_mask[threadIdx.x] = 0;
+        }
     }
+    auto page_fault_mask = reinterpret_cast<int*>(params.block_table == nullptr ? nullptr : params.page_fault_mask + bidb * params.block_table_batch_stride);
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_ + Kernel_traits::maxPagesPerBlock * sizeof(int))),
                             typename Kernel_traits::SmemLayoutQ{});
@@ -423,8 +428,12 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         );
 
         __syncthreads();
-        if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
-            invalid_page_mask[threadIdx.x] = 0;
+
+        if (tidx < Kernel_traits::maxPagesPerBlock) {
+            if (invalid_page_mask[tidx] == 1) {
+                invalid_page_mask[tidx] = 0;
+                flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
+            }
         }
 
         if (n_block > n_block_min) {
@@ -519,8 +528,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         // all masks have been applied
         __syncthreads();
 
-        if (threadIdx.x < Kernel_traits::maxPagesPerBlock) {
-            invalid_page_mask[threadIdx.x] = 0;
+        if (tidx < Kernel_traits::maxPagesPerBlock) {
+            if (invalid_page_mask[tidx] == 1) {
+                invalid_page_mask[tidx] = 0;
+                flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
+            }
         }
         
         if (n_block > n_block_min) {

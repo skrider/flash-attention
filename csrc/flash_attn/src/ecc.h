@@ -19,4 +19,14 @@ __device__ __forceinline__ uint32_t swap_ecc(Tensor &data, uint32_t code) {
     return ret;
 }
 
+template <typename Kernel_traits>
+__forceinline__ __device__
+void invalidate_page(const int block_pidx, const int n_block, const int page_block_size, 
+                    int* page_fault_mask) {
+    constexpr int kBlockN = Kernel_traits::kBlockN;
+
+    const int pages_per_block = kBlockN / page_block_size;
+    page_fault_mask[block_pidx + pages_per_block * n_block] = 1;
+}
+
 } // namespace flashinfer

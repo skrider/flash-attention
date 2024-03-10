@@ -213,17 +213,16 @@ void set_params_splitkv(Flash_fwd_params &params, const int batch_size,
     }
 }
 
-void set_params_ecc(Flash_fwd_params &params, c10::optional<at::Tensor> seq_ids) {
-    if (seq_ids.has_value()) {
-        TORCH_CHECK(seq_ids.value().dtype() == torch::kInt32, "seq_ids must have dtype int32");
-        CHECK_DEVICE(seq_ids.value());
-        CHECK_CONTIGUOUS(seq_ids.value());
-        params.seq_ids_ptr = seq_ids.value().data_ptr();
-        params.do_ecc = true;
-    } else {
-        params.do_ecc = false;
-        params.seq_ids_ptr = nullptr;
-    }
+void set_params_ecc(
+    Flash_fwd_params &params, 
+    const at::Tensor &seq_ids,
+    const at::Tensor &page_fault_mask
+) {
+    CHECK_DEVICE(seq_ids);
+    CHECK_CONTIGUOUS(seq_ids);
+    params.seq_ids_ptr = seq_ids.data_ptr();
+    params.do_ecc = true;
+    params.page_fault_mask = page_fault_mask.data_ptr();
 }
 
 void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi_slopes_, int batch_size, int num_heads){
@@ -264,8 +263,9 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 int window_size_right,
                 bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
                 int num_splits,
-                c10::optional<at::Tensor> &seq_ids             // batch_size
-                ) {
+                c10::optional<at::Tensor> &seq_ids_,             // batch_size
+                c10::optional<at::Tensor> &page_fault_mask_      // batch_size x max_num_blocks_per_seq
+) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
     // bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
@@ -489,7 +489,19 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
     }
     params.page_block_size = page_block_size;
 
-    set_params_ecc(params, seq_ids);
+    if (seq_ids_.has_value()) {
+        TORCH_CHECK(page_fault_mask_.has_value(), "If seq_ids is provided, page_fault_mask must also be provided");
+        auto seq_ids = seq_ids_.value();
+        auto page_fault_mask = page_fault_mask_.value();
+        TORCH_CHECK(seq_ids.size(0) == batch_size, "seq_ids must have the same batch size as the input");
+        CHECK_CONTIGUOUS(seq_ids);
+        CHECK_CONTIGUOUS(page_fault_mask);
+        TORCH_CHECK(page_fault_mask.size(0) == batch_size, "page_fault_mask must have the same batch size as the input");
+        TORCH_CHECK(block_table.size(1) == page_fault_mask.size(1), "block_table and page_fault_mask must have the same number of blocks per sequence");
+        TORCH_CHECK(seq_ids.scalar_type() == torch::kInt32, "seq_ids must have dtype int32");
+        TORCH_CHECK(page_fault_mask.scalar_type() == torch::kInt32, "page_fault_mask must have dtype int32");
+        set_params_ecc(params, seq_ids, page_fault_mask);
+    }
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
 
