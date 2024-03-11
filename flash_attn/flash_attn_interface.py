@@ -59,6 +59,7 @@ def flash_attn_with_kvcache(
     num_splits=0,
     seq_ids=None,
     page_fault_mask=None,
+    force_append=False,
 ):
     """
     If k and v are not None, k_cache and v_cache will be updated *inplace* with the new values from
@@ -175,5 +176,6 @@ def flash_attn_with_kvcache(
         num_splits,
         seq_ids,
         page_fault_mask,
+        force_append,
     )
     return out

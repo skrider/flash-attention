@@ -302,7 +302,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             int k_ecc = flash::swap_ecc(tKsK, 0);
             int v_ecc = flash::swap_ecc(tVsV, 0);
 
-            if (k_ecc != seq_id || v_ecc != seq_id) {
+            if ((k_ecc != seq_id || v_ecc != seq_id) && !params.force_append) {
                 invalid_page_mask[page_idx] = 1;
             }
 

@@ -220,6 +220,7 @@ def test_flash_attn_page_fault(
             num_splits=num_splits,
             seq_ids=seq_ids,
             page_fault_mask=page_fault_mask,
+            force_append=True,
         )
         torch.cuda.synchronize()
         page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
