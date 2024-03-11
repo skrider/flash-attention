@@ -35,7 +35,7 @@ torch.set_printoptions(threshold=np.inf)
 @pytest.mark.parametrize("has_batch_idx", [False])
 @pytest.mark.parametrize("mark_keys", [False])
 @pytest.mark.parametrize("interleave_kv", [False])
-@pytest.mark.parametrize("niter", [1])
+@pytest.mark.parametrize("niter", [2])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
@@ -54,11 +54,11 @@ torch.set_printoptions(threshold=np.inf)
         # (16, 20000),
         # (1, 128 * 1024),
         # (16, 128 * 1024),
-        (2, 128),
+        (2, 1024),
     ],
 )
 # @pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
-@pytest.mark.parametrize('seqlen_new', [ 64 ])
+@pytest.mark.parametrize('seqlen_new', [ 1024 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,

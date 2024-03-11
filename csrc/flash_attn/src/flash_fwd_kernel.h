@@ -283,6 +283,29 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         auto tVgV_data = tVgV.data();
 
         for (int n_block = n_block_max - 1; n_block >= n_block_copy_min; n_block--) {
+            int max_seqlen_block = params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN;
+
+            // check if page is writable
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
+                tKgK, tKsK, tKVcKV, tKVpKV, 
+                max_seqlen_block,
+                binfo.seqlen_k_cache - n_block * kBlockN
+            );
+            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
+                tVgV, tVsV, tKVcKV, tKVpKV, 
+                max_seqlen_block,
+                binfo.seqlen_k_cache - n_block * kBlockN
+            );
+            cute::cp_async_fence();
+            cute::cp_async_wait<0>();
+
+            int k_ecc = flash::swap_ecc(tKsK, 0);
+            int v_ecc = flash::swap_ecc(tVsV, 0);
+
+            if (k_ecc != seq_id || v_ecc != seq_id) {
+                invalid_page_mask[page_idx] = 1;
+            }
+
             flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
                 tVgVnew, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
             );
@@ -292,9 +315,21 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             );
             tKgKnew.data() = tKgKnew.data() + (-int(kBlockN * params.knew_row_stride));
 
+
             cute::cp_async_fence();
             cute::cp_async_wait<0>();
             __syncthreads();
+
+            if (tidx < Kernel_traits::maxPagesPerBlock) {
+                if (invalid_page_mask[tidx] == 1) {
+                    // only need to worry about OOB blocks on the masking iterations
+                    const int pidx = n_block * kBlockN / params.page_block_size + tidx;
+                    const int seq_pages_min = (binfo.actual_seqlen_k - n_block * kBlockN) / params.page_block_size;
+                    const int seq_pages_max = (binfo.seqlen_k_cache - n_block * kBlockN) / params.page_block_size;
+                    if (pidx >= seq_pages_min && pidx <= seq_pages_max)
+                        flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
+                }
+            }
 
             flash::swap_ecc(tKsK, seq_id);
             flash::swap_ecc(tVsV, seq_id);
@@ -303,18 +338,18 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             // TODO this probably will have some edge cases for odd/large page sizes
             // TODO only do this copy when allocating a new page
             // TODO handle case where no page table
-            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
-                tKsK, tKgK, tKVcKV, tKVpKV, 
-                params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
-                //binfo.actual_seqlen_k - n_block * kBlockN,
-                binfo.seqlen_k_cache - n_block * kBlockN
-            );
-            flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
-                tVsV, tVgV, tKVcKV, tKVpKV, 
-                params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN,
-                //binfo.actual_seqlen_k - n_block * kBlockN,
-                binfo.seqlen_k_cache - n_block * kBlockN
-            );
+            if (invalid_page_mask[page_idx] != 1) {
+                flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
+                    tKsK, tKgK, tKVcKV, tKVpKV, 
+                    max_seqlen_block,
+                    binfo.seqlen_k_cache - n_block * kBlockN
+                );
+                flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
+                    tVsV, tVgV, tKVcKV, tKVpKV, 
+                    max_seqlen_block,
+                    binfo.seqlen_k_cache - n_block * kBlockN
+                );
+            }
             
             if (block_table == nullptr) {
                 tVgV.data() = tVgV.data() + (-int(kBlockN * params.v_row_stride));
@@ -332,6 +367,15 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         __syncthreads();
         tKgK.data() = tKgK_data;
         tVgV.data() = tVgV_data;
+    }
+
+    // reset invalid page mask table again
+    if (tidx < Kernel_traits::maxPagesPerBlock) {
+        if (tidx >= kBlockN / params.page_block_size) {
+            invalid_page_mask[tidx] = 2;
+        } else {
+            invalid_page_mask[tidx] = 0;
+        }
     }
 
     // We don't need to clear the sQ smem tiles since we'll only write out the valid outputs
@@ -424,7 +468,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 #endif
         mask.template apply_mask<Is_causal, Is_even_MN, true>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
-            invalid_page_mask, params.page_block_size, Kernel_traits::kBlockN / params.page_block_size
+            invalid_page_mask, params.page_block_size, kBlockN / params.page_block_size
         );
 
         __syncthreads();
@@ -434,7 +478,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 invalid_page_mask[tidx] = 0;
                 // only need to worry about OOB blocks on the masking iterations
                 const int seq_pages = (binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size;
-                const int pidx = n_block * Kernel_traits::kBlockN / params.page_block_size + tidx;
+                const int pidx = n_block * kBlockN / params.page_block_size + tidx;
                 if (pidx < seq_pages)
                     flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
             }
@@ -514,7 +558,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         
         __syncthreads();
         
-#if 1
+#if 0
         if (thread0()) {
             print_tensor(sV);
             printf("nomask block %d invalid_page_mask = ", n_block);
@@ -525,7 +569,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 #endif
         mask.template apply_mask</*Causal_mask=*/false, /*Is_even_MN=*/true, /*Page_fault_mask=*/true>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
-            invalid_page_mask, params.page_block_size, Kernel_traits::kBlockN / params.page_block_size
+            invalid_page_mask, params.page_block_size, kBlockN / params.page_block_size
         );
 
         // TODO see if this syncthreads can be removed - needed to prevent resetting page mask before
