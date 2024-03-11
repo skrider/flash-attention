@@ -493,6 +493,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         TORCH_CHECK(page_fault_mask_.has_value(), "If seq_ids is provided, page_fault_mask must also be provided");
         auto seq_ids = seq_ids_.value();
         auto page_fault_mask = page_fault_mask_.value();
+        CHECK_DEVICE(seq_ids);
+        CHECK_DEVICE(page_fault_mask);
         TORCH_CHECK(seq_ids.size(0) == batch_size, "seq_ids must have the same batch size as the input");
         CHECK_CONTIGUOUS(seq_ids);
         CHECK_CONTIGUOUS(page_fault_mask);

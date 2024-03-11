@@ -131,7 +131,8 @@ struct Mask {
                                                const int row_idx_offset,
                                                const int warp_row_stride,
                                                const int* invalid_page_mask=nullptr,
-                                               const int page_block_size=0) {
+                                               const int page_block_size=0,
+                                               const int pages_per_block=0) {
         static_assert(!(Causal_mask && Is_local), "Cannot be both causal and local");
         static_assert(Layout::rank == 3, "Only support 3D Tensor");
         static_assert(decltype(size<0>(tensor_))::value == 4, "First dimension must be 4");
@@ -162,7 +163,7 @@ struct Mask {
                             }
                             if constexpr (Page_fault_mask) {
                                 int page_idx = col_idx / page_block_size;
-                                if (invalid_page_mask[page_idx]) {
+                                if (invalid_page_mask[page_idx % pages_per_block]) {
                                     tensor(mi, make_coord(j, nj)) = -INFINITY;
                                 }
                             }
@@ -210,7 +211,8 @@ struct Mask {
                                 }
                                 if constexpr (Page_fault_mask) {
                                     int page_idx = col_idx / page_block_size;
-                                    if (invalid_page_mask[page_idx]) {
+                                    if (invalid_page_mask[page_idx % pages_per_block]) {
+                                        //printf("ROWCOL: (%d, %d)\n", row_idx, col_idx); // materialize_mask.py
                                         tensor(mi, make_coord(j, nj)) = -INFINITY;
                                     }
                                 }

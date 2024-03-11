@@ -424,7 +424,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 #endif
         mask.template apply_mask<Is_causal, Is_even_MN, true>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
-            invalid_page_mask, params.page_block_size
+            invalid_page_mask, params.page_block_size, Kernel_traits::kBlockN / params.page_block_size
         );
 
         __syncthreads();
@@ -432,7 +432,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         if (tidx < Kernel_traits::maxPagesPerBlock) {
             if (invalid_page_mask[tidx] == 1) {
                 invalid_page_mask[tidx] = 0;
-                flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
+                // only need to worry about OOB blocks on the masking iterations
+                const int seq_pages = (binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size;
+                const int pidx = n_block * Kernel_traits::kBlockN / params.page_block_size + tidx;
+                if (pidx < seq_pages)
+                    flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
             }
         }
 
@@ -510,7 +514,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         
         __syncthreads();
         
-#if 0
+#if 1
         if (thread0()) {
             print_tensor(sV);
             printf("nomask block %d invalid_page_mask = ", n_block);
@@ -521,7 +525,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
 #endif
         mask.template apply_mask</*Causal_mask=*/false, /*Is_even_MN=*/true, /*Page_fault_mask=*/true>(
             acc_s, n_block * kBlockN, m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4, kNWarps * 16,
-            invalid_page_mask, params.page_block_size
+            invalid_page_mask, params.page_block_size, Kernel_traits::kBlockN / params.page_block_size
         );
 
         // TODO see if this syncthreads can be removed - needed to prevent resetting page mask before

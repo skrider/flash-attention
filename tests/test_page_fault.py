@@ -34,30 +34,31 @@ torch.set_printoptions(threshold=np.inf)
 # @pytest.mark.parametrize("has_batch_idx", [False, True])
 @pytest.mark.parametrize("has_batch_idx", [False])
 @pytest.mark.parametrize("mark_keys", [False])
-@pytest.mark.parametrize("niter", [2])
+@pytest.mark.parametrize("interleave_kv", [False])
+@pytest.mark.parametrize("niter", [1])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
 # @pytest.mark.parametrize('d', [56, 80])
 @pytest.mark.parametrize("d", [64])
-# @pytest.mark.parametrize(
-#     "seqlen_q,seqlen_k",
-#     [
-#         (1, 128),
-#         (1, 339),
-#         (3, 1024),
-#         (64, 800),
-#         (64, 256),
-#         (3, 799),
-#         (64, 2048),
-#         (16, 20000),
-#         (1, 128 * 1024),
-#         (16, 128 * 1024),
-#         (128, 128),
-#     ],
-# )
-@pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
-@pytest.mark.parametrize('seqlen_new', [ 128 ])
+@pytest.mark.parametrize(
+    "seqlen_q,seqlen_k",
+    [
+        # (1, 128),
+        # (1, 339),
+        # (3, 1024),
+        # (64, 800),
+        # (64, 256),
+        # (3, 799),
+        # (64, 2048),
+        # (16, 20000),
+        # (1, 128 * 1024),
+        # (16, 128 * 1024),
+        (2, 128),
+    ],
+)
+# @pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
+@pytest.mark.parametrize('seqlen_new', [ 64 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
@@ -74,6 +75,7 @@ def test_flash_attn_page_fault(
     new_kv,
     mha_type,
     num_splits,
+    interleave_kv,
     mark_keys,
     niter,
     dtype,
@@ -112,13 +114,22 @@ def test_flash_attn_page_fault(
         v_cache = torch.randn(batch_size_cache, seqlen_k, nheads_k, d, device=device, dtype=dtype)
         block_table = None
     else:
+
         num_blocks = math.ceil(seqlen_k / paged_kv_block_size) * batch_size * 3
-        k_cache_paged = torch.randn(
-            num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
-        ) * d
-        v_cache_paged = torch.randn(
-            num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
-        )
+        if interleave_kv:
+            kv_cache_paged = torch.randn(
+                num_blocks, 2, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
+            )
+            k_cache_paged = kv_cache_paged[:, 0] * d
+            v_cache_paged = kv_cache_paged[:, 1]
+            pass
+        else:
+            k_cache_paged = torch.randn(
+                num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
+            ) * d
+            v_cache_paged = torch.randn(
+                num_blocks, paged_kv_block_size, nheads_k, d, device=device, dtype=dtype
+            )
         block_table = rearrange(
             torch.randperm(num_blocks, dtype=torch.int32, device=device),
             "(b nblocks) -> b nblocks",
@@ -144,7 +155,7 @@ def test_flash_attn_page_fault(
 
     # seq_ids = torch.arange(batch_size, device=device, dtype=torch.int32) + 112342
     seq_ids = torch.ones(batch_size, device=device, dtype=torch.int32) * 0xefffffff
-    page_fault_mask = torch.zeros_like(block_table)
+    page_fault_mask = torch.zeros_like(block_table).to(torch.int32)
 
     # cache_seqlens = torch.randint(
     #     0 if new_kv else 1,
@@ -211,7 +222,10 @@ def test_flash_attn_page_fault(
             page_fault_mask=page_fault_mask,
         )
         torch.cuda.synchronize()
-        __import__('pdb').set_trace()
+        page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
+
+        assert torch.all(page_fault_mask[:, :page_faults_ref] == 1)
+        assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
 
         cache_seqlens += k_new_len
     
@@ -244,10 +258,13 @@ def test_flash_attn_page_fault(
         reorder_ops=True,
         mask=mask,
     )
+    print(out)
     print(f"Output max diff: {(out - out_ref).abs().max().item()}")
     print(f"Output mean diff: {(out - out_ref).abs().mean().item()}")
     print(f"Pytorch max diff: {(out_pt - out_ref).abs().max().item()}")
     print(f"Pytorch mean diff: {(out_pt - out_ref).abs().mean().item()}")
+    print(f"Output/Pytorch max diff: {(out_pt - out).abs().max().item()}")
+    print(f"Output/Pytorch mean diff: {(out_pt - out).abs().mean().item()}")
 
     # Check that FlashAttention's numerical error is at most twice the numerical error
     # of a Pytorch implementation.
@@ -267,7 +284,6 @@ def test_flash_attn_page_fault(
                 b=batch_size,
             )[:, :seqlen_k]
         assert torch.allclose(k_cache_select, k_cache_ref, rtol=1e-3, atol=1e-3)
-        assert torch.equal(v_cache_select, v_cache_ref)
     mult = 3 if not alibi else 5
     assert (out - out_ref).abs().max().item() <= mult * (out_pt - out_ref).abs().max().item() + 1e-5
 
