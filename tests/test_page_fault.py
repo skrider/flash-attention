@@ -36,6 +36,7 @@ torch.set_printoptions(threshold=np.inf)
 @pytest.mark.parametrize("mark_keys", [False])
 @pytest.mark.parametrize("interleave_kv", [False])
 @pytest.mark.parametrize("niter", [1])
+@pytest.mark.parametrize("noop_prefill", [True])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
@@ -54,11 +55,11 @@ torch.set_printoptions(threshold=np.inf)
         # (16, 20000),
         # (1, 128 * 1024),
         # (16, 128 * 1024),
-        (1, 337),
+        (16 * 16, 16),
     ],
 )
 # @pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
-@pytest.mark.parametrize('seqlen_new', [ 337 ])
+@pytest.mark.parametrize('seqlen_new', [ 16 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
@@ -79,11 +80,16 @@ def test_flash_attn_page_fault(
     mark_keys,
     niter,
     dtype,
+    noop_prefill,
 ):
+    if not new_kv and noop_prefill:
+        pytest.skip()
+    if noop_prefill and niter > 1:
+        pytest.skip()
     if not new_kv and niter > 1:
         pytest.skip()
-    if seqlen_q > seqlen_k and new_kv:
-        pytest.skip()
+    # if seqlen_q > seqlen_k and new_kv:
+    #     pytest.skip()
     if not new_kv and rotary_fraction > 0.0:
         pytest.skip()
     if has_batch_idx and paged_kv_block_size is not None:
@@ -198,16 +204,48 @@ def test_flash_attn_page_fault(
     k_cache_rep = repeat(k_cache_ref, "b s h d -> b s (h g) d", g=nheads // nheads_k)
     v_cache_rep = repeat(v_cache_ref, "b s h d -> b s (h g) d", g=nheads // nheads_k)
     assert seqlen_new % niter == 0
+    if noop_prefill:
+        out = flash_attn_with_kvcache(
+            torch.zeros(batch_size, 1, nheads, d, device=device, dtype=dtype),
+            k_cache if paged_kv_block_size is None else k_cache_paged,
+            v_cache if paged_kv_block_size is None else v_cache_paged,
+            k,
+            v,
+            rotary_cos=cos,
+            rotary_sin=sin,
+            cache_seqlens=cache_seqlens,
+            cache_batch_idx=cache_batch_idx,
+            block_table=block_table,
+            causal=causal,
+            window_size=window_size,
+            rotary_interleaved=rotary_interleaved,
+            alibi_slopes=alibi_slopes,
+            num_splits=num_splits,
+            seq_ids=seq_ids,
+            page_fault_mask=page_fault_mask,
+            force_append=True,
+        )
+        
+        page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
+
+        assert torch.all(page_fault_mask[:, :page_faults_ref] == 1)
+        assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
+
+        cache_seqlens += seqlen_new
+
+
     for i in range(niter):
         k_new_start = (seqlen_new // niter) * i
         k_new_len = seqlen_new // niter
+        k_iter = None if noop_prefill else k[:, k_new_start:k_new_start + k_new_len]
+        v_iter = None if noop_prefill else v[:, k_new_start:k_new_start + k_new_len]
         print("RUN", i)
         out = flash_attn_with_kvcache(
             q,
             k_cache if paged_kv_block_size is None else k_cache_paged,
             v_cache if paged_kv_block_size is None else v_cache_paged,
-            k[:, k_new_start:k_new_start + k_new_len],
-            v[:, k_new_start:k_new_start + k_new_len],
+            k_iter,
+            v_iter,
             rotary_cos=cos,
             rotary_sin=sin,
             cache_seqlens=cache_seqlens,
@@ -223,12 +261,14 @@ def test_flash_attn_page_fault(
             force_append=True,
         )
         torch.cuda.synchronize()
-        page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
 
-        assert torch.all(page_fault_mask[:, :page_faults_ref] == 1)
-        assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
+        if not noop_prefill:
+            page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
 
-        cache_seqlens += k_new_len
+            assert torch.all(page_fault_mask[:, :page_faults_ref] == 1)
+            assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
+
+            cache_seqlens += k_new_len
     
     out_ref, _ = attention_ref(
         q_ro,
