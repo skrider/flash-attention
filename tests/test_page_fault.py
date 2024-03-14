@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from flash_attn import flash_attn_with_kvcache
+from flash_attn import flash_attn_with_kvcache, reshape_and_cache
 
 np.set_printoptions(threshold=np.inf)
 torch.set_printoptions(threshold=np.inf)
@@ -205,24 +205,18 @@ def test_flash_attn_page_fault(
     v_cache_rep = repeat(v_cache_ref, "b s h d -> b s (h g) d", g=nheads // nheads_k)
     assert seqlen_new % niter == 0
     if noop_prefill:
-        out = flash_attn_with_kvcache(
-            torch.zeros(batch_size, 1, nheads, d, device=device, dtype=dtype),
+        reshape_and_cache(
             k_cache if paged_kv_block_size is None else k_cache_paged,
             v_cache if paged_kv_block_size is None else v_cache_paged,
             k,
             v,
+            cache_seqlens,
+            block_table,
+            seq_ids,
+            page_fault_mask,
             rotary_cos=cos,
             rotary_sin=sin,
-            cache_seqlens=cache_seqlens,
-            cache_batch_idx=cache_batch_idx,
-            block_table=block_table,
-            causal=causal,
-            window_size=window_size,
             rotary_interleaved=rotary_interleaved,
-            alibi_slopes=alibi_slopes,
-            num_splits=num_splits,
-            seq_ids=seq_ids,
-            page_fault_mask=page_fault_mask,
             force_append=True,
         )
         
