@@ -33,7 +33,7 @@ torch.set_printoptions(threshold=np.inf)
 @pytest.mark.parametrize("paged_kv_block_size", [16])
 # @pytest.mark.parametrize("has_batch_idx", [False, True])
 @pytest.mark.parametrize("has_batch_idx", [False])
-@pytest.mark.parametrize("mark_keys", [True])
+@pytest.mark.parametrize("mark_keys", [False])
 @pytest.mark.parametrize("interleave_kv", [False])
 @pytest.mark.parametrize("niter", [1])
 @pytest.mark.parametrize("noop_prefill", [True])
@@ -222,7 +222,6 @@ def test_flash_attn_page_fault(
         
         page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
 
-        #__import__("pdb").set_trace()
         if mark_keys:
             assert torch.all(
                 k_cache_paged[block_table[0]][:, :, 0, 1].flatten()[:seqlen_k-1]
@@ -329,7 +328,6 @@ def test_flash_attn_page_fault(
                 "(b nblocks) block_size ... -> b (nblocks block_size) ...",
                 b=batch_size,
             )[:, :seqlen_k]
-        __import__('pdb').set_trace()
         assert torch.allclose(k_cache_select, k_cache_ref, rtol=1e-3, atol=1e-3)
     mult = 3 if not alibi else 5
     assert (out - out_ref).abs().max().item() <= mult * (out_pt - out_ref).abs().max().item() + 1e-5

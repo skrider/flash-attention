@@ -190,6 +190,7 @@ def reshape_and_cache(
     block_table: torch.Tensor,
     seq_ids: torch.Tensor,
     page_fault_mask: torch.Tensor,
+    cache_batch_idx: Optional[torch.Tensor] = None,
     rotary_cos=None,
     rotary_sin=None,
     rotary_interleaved=True,
@@ -205,6 +206,8 @@ def reshape_and_cache(
         )
     cache_seqlens = maybe_contiguous(cache_seqlens)
     block_table = maybe_contiguous(block_table)
+    if cache_batch_idx is None:
+        cache_batch_idx = torch.arange(block_table.shape[0], device=k_cache.device, dtype=torch.int32)
     flash_attn_cuda.reshape_and_cache(
         k_cache,
         v_cache,
@@ -212,6 +215,7 @@ def reshape_and_cache(
         v,
         cache_seqlens,
         block_table,
+        cache_batch_idx,
         rotary_cos,
         rotary_sin,
         rotary_interleaved,
