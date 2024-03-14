@@ -75,7 +75,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         n_block_max = std::min(n_block_max,
                                cute::ceil_div((m_block + 1) * kBlockM + binfo.actual_seqlen_k - binfo.actual_seqlen_q + params.window_size_right, kBlockN));
     }
-    if (n_block_min >= n_block_max) {  // This also covers the case where n_block_max <= 0
+    if (n_block_min >= n_block_max && !params.append_only) {  // This also covers the case where n_block_max <= 0
         // We exit early and write 0 to gOaccum and -inf to gLSEaccum.
         // Otherwise we might read OOB elements from gK and gV,
         // or get wrong results when we combine gOaccum from different blocks.
@@ -683,6 +683,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
     flash::copy<Is_even_MN, Is_even_K, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
         gmem_tiled_copy_Oaccum, tOrOaccum, tOgOaccum, tOcO, tOpO, binfo.actual_seqlen_q - m_block * kBlockM
     );
+
+    // if block 0, move to the previous LSE 
     // __syncthreads();
     // if (cute::thread0()) { print(tOgOaccum); }
 }

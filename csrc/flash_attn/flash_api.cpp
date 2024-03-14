@@ -248,6 +248,14 @@ void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi
 #endif
 }
 
+void set_params_recovery(
+    Flash_fwd_params &params, 
+    at::Tensor &prev_out,
+    at::Tensor &prev_lse
+) {
+    return;
+}
+
 void
 reshape_and_cache(
     const at::Tensor &kcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
@@ -284,9 +292,10 @@ reshape_and_cache(
     const auto sizes = k.sizes();
 
     const int batch_size = sizes[0];
-    int seqlen_q = sizes[1];
+    int seqlen = sizes[1];
     int num_heads = sizes[2];
     const int head_size_og = sizes[3];
+    static constexpr int pseudo_seqlen_q = 1;
 
     const int max_num_blocks_per_seq = block_table.size(1);
     const int num_blocks = kcache.size(0);
@@ -300,15 +309,17 @@ reshape_and_cache(
     TORCH_CHECK(head_size_og % 8 == 0, "Head size must (temporarily) be a multiple of 8");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
 
-    CHECK_SHAPE(k, batch_size, seqlen_q, num_heads_k, head_size_og);
-    CHECK_SHAPE(v, batch_size, seqlen_q, num_heads_k, head_size_og);
-    CHECK_SHAPE(kcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
-    CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
+    CHECK_SHAPE(k, batch_size, seqlen, num_heads_k, head_size_og);
+    CHECK_SHAPE(v, batch_size, seqlen, num_heads_k, head_size_og);
+    CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_og);
+    CHECK_SHAPE(vcache, num_blocks, page_block_size, num_heads_k, head_size_og);
+    CHECK_SHAPE(block_table, batch_size, max_num_blocks_per_seq);
 
     auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
     const int head_size = round_multiple(head_size_og, 8);
     const int head_size_rounded = round_multiple(head_size, 32);
-    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+    const int seqlen_rounded = round_multiple(seqlen, 128);
+    const int pseudo_seqlen_q_rounded = round_multiple(pseudo_seqlen_q, 128);
     const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
 
     // Otherwise the kernel will be launched from cuda:0 device
@@ -320,12 +331,12 @@ reshape_and_cache(
     Flash_fwd_params params;
     set_params_fprop(params,
                      batch_size,
-                     seqlen_q, seqlen_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
+                     pseudo_seqlen_q, seqlen_k,
+                     pseudo_seqlen_q_rounded, seqlen_k_rounded,
                      num_heads, num_heads_k,
                      head_size, head_size_rounded,
                      /*q=*/k, kcache, vcache, /*out=*/k,
-                     0, 0, 0, 0, 0, 0, 0, 0, 0);
+                     0, 0, 0, 0, 0, 0, 0, -1, -1);
 
     TORCH_CHECK(k.stride(-1) == 1, "Key tensor must have contiguous last dimension");
     TORCH_CHECK(v.stride(-1) == 1, "Value tensor must have contiguous last dimension");
@@ -374,7 +385,7 @@ reshape_and_cache(
     }
 
     set_params_splitkv(params, batch_size, num_heads,
-                       head_size, seqlen_k, seqlen_q,
+                       head_size, seqlen_k, pseudo_seqlen_q,
                        head_size_rounded, /*dropout*/0.f, 1, dprops, opts);
 
     params.block_table = block_table.data_ptr<int>();
@@ -411,6 +422,8 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
                 c10::optional<at::Tensor> &block_table_, // batch_size x max_num_blocks_per_seq
                 c10::optional<at::Tensor> &alibi_slopes_, // num_heads or batch_size x num_heads
                 c10::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
+                //c10::optional<at::Tensor> &prev_out_,             // batch_size x seqlen_q x num_heads x head_size
+                //c10::optional<at::Tensor> &prev_lse_,             // batch_size x seqlen_q x num_heads x head_size
                 const float softmax_scale,
                 bool is_causal,
                 int window_size_left,

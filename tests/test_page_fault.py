@@ -12,9 +12,9 @@ torch.set_printoptions(threshold=np.inf)
 # @pytest.mark.parametrize("dtype", ([torch.float16] if is_sm75 else [torch.float16, torch.bfloat16]))
 @pytest.mark.parametrize("dtype", [torch.float16])
 # @pytest.mark.parametrize("num_splits", [1, 0])
-@pytest.mark.parametrize("num_splits", [1])
+@pytest.mark.parametrize("num_splits", [0])
 # @pytest.mark.parametrize("mha_type", ["mha", "mqa", "gqa"])
-@pytest.mark.parametrize("mha_type", ["mqa"])
+@pytest.mark.parametrize("mha_type", ["mha"])
 # @pytest.mark.parametrize("new_kv", [False, True])
 @pytest.mark.parametrize("new_kv", [True])
 # @pytest.mark.parametrize("alibi", [False, True])
@@ -33,10 +33,10 @@ torch.set_printoptions(threshold=np.inf)
 @pytest.mark.parametrize("paged_kv_block_size", [16])
 # @pytest.mark.parametrize("has_batch_idx", [False, True])
 @pytest.mark.parametrize("has_batch_idx", [False])
-@pytest.mark.parametrize("mark_keys", [False])
+@pytest.mark.parametrize("mark_keys", [True])
 @pytest.mark.parametrize("interleave_kv", [False])
 @pytest.mark.parametrize("niter", [1])
-@pytest.mark.parametrize("noop_prefill", [False])
+@pytest.mark.parametrize("noop_prefill", [True])
 # @pytest.mark.parametrize("d", [32, 59, 64, 80, 128, 256])
 # @pytest.mark.parametrize("d", [32, 64, 96, 128, 160, 192, 224, 256])
 # @pytest.mark.parametrize('d', [32, 40, 64, 80, 96, 128, 160, 192])
@@ -55,11 +55,11 @@ torch.set_printoptions(threshold=np.inf)
         # (16, 20000),
         # (1, 128 * 1024),
         # (16, 128 * 1024),
-        (1, 16),
+        (1, 512),
     ],
 )
 # @pytest.mark.parametrize('seqlen_q,seqlen_k', [ (2, 128) ])
-@pytest.mark.parametrize('seqlen_new', [ 16 ])
+@pytest.mark.parametrize('seqlen_new', [ 512 ])
 def test_flash_attn_page_fault(
     seqlen_q,
     seqlen_k,
@@ -97,7 +97,7 @@ def test_flash_attn_page_fault(
     device = "cuda"
     # set seed
     torch.random.manual_seed(0)
-    batch_size = 11
+    batch_size = 8
     batch_size_cache = batch_size if not has_batch_idx else batch_size * 2
     nheads = 8
     # rotary_dim must be a multiple of 16, and must be <= d
@@ -120,7 +120,6 @@ def test_flash_attn_page_fault(
         v_cache = torch.randn(batch_size_cache, seqlen_k, nheads_k, d, device=device, dtype=dtype)
         block_table = None
     else:
-
         num_blocks = math.ceil(seqlen_k / paged_kv_block_size) * batch_size * 3
         if interleave_kv:
             kv_cache_paged = torch.randn(
@@ -153,7 +152,7 @@ def test_flash_attn_page_fault(
         )[:, :seqlen_k]
         if mark_keys:
             for i in range(batch_size):
-                for bn in range(num_blocks):
+                for bn in range(seqlen_k // paged_kv_block_size):
                     block_idx = block_table[i, bn]
                     for j in range(paged_kv_block_size):
                         k_cache_paged[block_idx, j].fill_(1.0 * (bn * paged_kv_block_size + j))
@@ -206,8 +205,8 @@ def test_flash_attn_page_fault(
     assert seqlen_new % niter == 0
     if noop_prefill:
         reshape_and_cache(
-            k_cache if paged_kv_block_size is None else k_cache_paged,
-            v_cache if paged_kv_block_size is None else v_cache_paged,
+            k_cache_paged,
+            v_cache_paged,
             k,
             v,
             cache_seqlens,
@@ -219,9 +218,20 @@ def test_flash_attn_page_fault(
             rotary_interleaved=rotary_interleaved,
             force_append=True,
         )
+        torch.cuda.synchronize()
         
         page_faults_ref = (seqlen_k - seqlen_new + paged_kv_block_size - 1) // paged_kv_block_size
 
+        #__import__("pdb").set_trace()
+        if mark_keys:
+            assert torch.all(
+                k_cache_paged[block_table[0]][:, :, 0, 1].flatten()[:seqlen_k-1]
+                > k_cache_paged[block_table[0]][:, :, 0, 1].flatten()[1:seqlen_k]
+            )
+            assert torch.all(
+                k_cache_paged[block_table[-1]][:, :, 0, 1].flatten()[:seqlen_k-1]
+                > k_cache_paged[block_table[-1]][:, :, 0, 1].flatten()[1:seqlen_k]
+            )
         assert torch.all(page_fault_mask[:, :page_faults_ref] == 1)
         assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
 
@@ -263,6 +273,8 @@ def test_flash_attn_page_fault(
             assert torch.all(page_fault_mask[:, page_faults_ref:] == 0)
 
             cache_seqlens += k_new_len
+        else:
+            assert torch.all(page_fault_mask[:, :cache_seqlens[0] // paged_kv_block_size] == 0)
     
     out_ref, _ = attention_ref(
         q_ro,
@@ -317,6 +329,7 @@ def test_flash_attn_page_fault(
                 "(b nblocks) block_size ... -> b (nblocks block_size) ...",
                 b=batch_size,
             )[:, :seqlen_k]
+        __import__('pdb').set_trace()
         assert torch.allclose(k_cache_select, k_cache_ref, rtol=1e-3, atol=1e-3)
     mult = 3 if not alibi else 5
     assert (out - out_ref).abs().max().item() <= mult * (out_pt - out_ref).abs().max().item() + 1e-5
