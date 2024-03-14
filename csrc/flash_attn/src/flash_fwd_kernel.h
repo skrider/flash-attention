@@ -283,28 +283,56 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         auto tVgV_data = tVgV.data();
 
         for (int n_block = n_block_max - 1; n_block >= n_block_copy_min; n_block--) {
+            // round up to page size
             int max_seqlen_block = params.page_block_size * ((binfo.actual_seqlen_k + params.page_block_size - 1) / params.page_block_size) - n_block * kBlockN;
+            // round down to page size
+            int min_seqlen_block = (binfo.seqlen_k_cache / params.page_block_size * params.page_block_size) - n_block * kBlockN;
+            
+            if (tidx < Kernel_traits::maxPagesPerBlock) {
+                if (invalid_page_mask[tidx] == 1) {
+                    invalid_page_mask[tidx] = 0;
+                }
+            }
 
             // check if page is writable
             flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
                 tKgK, tKsK, tKVcKV, tKVpKV, 
                 max_seqlen_block,
-                binfo.seqlen_k_cache - n_block * kBlockN
+                min_seqlen_block
             );
             flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
                 tVgV, tVsV, tKVcKV, tKVpKV, 
                 max_seqlen_block,
-                binfo.seqlen_k_cache - n_block * kBlockN
+                min_seqlen_block
             );
             cute::cp_async_fence();
             cute::cp_async_wait<0>();
+#if 0
+            __syncthreads();
+            if (thread0()) {
+                print_tensor(sV(_, 0));
+                printf("max_seqlen_block = %d\n", max_seqlen_block);
+                printf("min_seqlen_block = %d\n", min_seqlen_block);
+            }
+#endif
 
             int k_ecc = flash::swap_ecc(tKsK, 0);
             int v_ecc = flash::swap_ecc(tVsV, 0);
+            int k_seq_id = flash::get_seq_id<Kernel_traits>(k_ecc);
+            int v_seq_id = flash::get_seq_id<Kernel_traits>(v_ecc);
 
-            if ((k_ecc != seq_id || v_ecc != seq_id) && !params.force_append) {
+            // we don't have to worry about checking page offset as the appends
+            // are guaranteed to be serialized
+            if ((k_seq_id != seq_id || v_seq_id != seq_id) && !params.force_append) {
                 invalid_page_mask[page_idx] = 1;
             }
+#if 1
+            __syncthreads();
+            if (thread0()) {
+                print_tensor(sV(_, 0));
+                printf("k ecc: %d, v ecc: %d, k seq id: %d, v seq id: %d\n", k_ecc, v_ecc, k_seq_id, v_seq_id);
+            }
+#endif
 
             flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/true>(
                 tVgVnew, tVsV, tKVcKV, tKVpKV, binfo.actual_seqlen_k - n_block * kBlockN, binfo.seqlen_k_cache - n_block * kBlockN
@@ -320,6 +348,12 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
             cute::cp_async_wait<0>();
             __syncthreads();
 
+#if 0
+            __syncthreads();
+            if (thread0()) {
+                print_tensor(sV(_, 0));
+            }
+#endif
             if (tidx < Kernel_traits::maxPagesPerBlock) {
                 if (invalid_page_mask[tidx] == 1) {
                     // only need to worry about OOB blocks on the masking iterations
@@ -329,10 +363,11 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                     if (pidx >= seq_pages_min && pidx <= seq_pages_max)
                         flash::invalidate_page<Kernel_traits>(tidx, n_block, params.page_block_size, page_fault_mask);
                 }
-            }
+            }   
 
-            flash::swap_ecc(tKsK, seq_id);
-            flash::swap_ecc(tVsV, seq_id);
+            int ecc = flash::compute_ecc<Kernel_traits>(seq_id, page_idx, n_block, binfo.actual_seqlen_k, params.page_block_size);
+            flash::swap_ecc(tKsK, ecc);
+            flash::swap_ecc(tVsV, ecc);
 
             // round to the nearest multiple of page_block_size to ensure all the ECCs are written
             // TODO this probably will have some edge cases for odd/large page sizes
@@ -342,6 +377,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
                 flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
                     tKsK, tKgK, tKVcKV, tKVpKV, 
                     max_seqlen_block,
+                    // use the old seqlen_k_cache to avoid writing stuff that's already there
                     binfo.seqlen_k_cache - n_block * kBlockN
                 );
                 flash::copy_w_min_idx<Is_even_K, /*Clear_OOB_MN=*/false>(
@@ -418,9 +454,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});  // (MMA=4, MMA_M, MMA_N)
         clear(acc_s);
         flash::cp_async_wait<0>(); // K copy
-
+        int ecc = flash::compute_ecc<Kernel_traits>(seq_id, page_idx, n_block, binfo.actual_seqlen_k, params.page_block_size);
         auto k_ecc = flash::swap_ecc(tKsK, 0);
-        if (k_ecc != seq_id) {
+        if (k_ecc != ecc) {
             invalid_page_mask[page_idx] = 1;
         }
 
@@ -453,7 +489,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         flash::cp_async_wait<0>(); // V copy
 
         auto v_ecc = flash::swap_ecc(tVsV, 0);
-        if (v_ecc != seq_id) {
+        if (v_ecc != ecc) {
             invalid_page_mask[page_idx] = 1;
         }
         
@@ -528,8 +564,9 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         clear(acc_s);
         flash::cp_async_wait<0>(); // K copy
         
+        int ecc = flash::compute_ecc<Kernel_traits>(seq_id, page_idx, n_block, binfo.actual_seqlen_k, params.page_block_size);
         auto k_ecc = flash::swap_ecc(tKsK, 0);
-        if (k_ecc != seq_id) {
+        if (k_ecc != ecc) {
             // TODO see if simultaneous writes are bad
             invalid_page_mask[page_idx] = 1;
         }
@@ -554,7 +591,7 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         flash::cp_async_wait<0>();
         
         auto v_ecc = flash::swap_ecc(tVsV, 0);
-        if (v_ecc != seq_id) {
+        if (v_ecc != ecc) {
             invalid_page_mask[page_idx] = 1;
         }
         

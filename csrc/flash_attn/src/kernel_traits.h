@@ -9,6 +9,17 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/layout/layout.h"
 #include <cutlass/numeric_types.h>
+#include <cstdint>
+
+namespace flash {
+    constexpr int ilog2(uint64_t n) {
+        for (int i = 0; i < 64; i++) {
+            if (n >= (1ULL << i) && n < (1ULL << (i + 1))) {
+                return i;
+            }
+        }
+    }
+}
 
 using namespace cute;
 
@@ -105,6 +116,9 @@ struct Flash_fwd_kernel_traits : public Base {
     using SmemCopyAtomOaccum = Copy_Atom<DefaultCopy, ElementAccum>;
 
     static constexpr int maxPagesPerBlock = kBlockN / 16;
+    static constexpr int maxPageSize = kBlockN;
+    static_assert(kBlockN == 1 << flash::ilog2(kBlockN), "kBlockN must be a power of 2");
+    static constexpr int maxPageSizeLog2 = flash::ilog2(maxPageSize);
     
     static constexpr int kSmemQSize = size(SmemLayoutQ{}) * sizeof(Element);
     static constexpr int kSmemKVSize = size(SmemLayoutKV{}) * 2 * sizeof(Element);
