@@ -369,6 +369,8 @@ inline __device__ void compute_attn_1rowblock_splitkv(const Params &params, cons
         tVgV.data() = tVgV_data;
     }
 
+    if (params.append_only) return;
+
     // reset invalid page mask table again
     if (tidx < Kernel_traits::maxPagesPerBlock) {
         if (tidx >= kBlockN / params.page_block_size) {

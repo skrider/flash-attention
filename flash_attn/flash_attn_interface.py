@@ -179,3 +179,43 @@ def flash_attn_with_kvcache(
         force_append,
     )
     return out
+
+
+def reshape_and_cache(
+    k_cache,
+    v_cache,
+    k,
+    v,
+    cache_seqlens: Union[(int, torch.Tensor)],
+    block_table: torch.Tensor,
+    seq_ids: torch.Tensor,
+    page_fault_mask: torch.Tensor,
+    rotary_cos=None,
+    rotary_sin=None,
+    rotary_interleaved=True,
+    force_append=False,
+):
+    assert k_cache.stride(-1) == 1, "k_cache must have contiguous last dimension"
+    assert v_cache.stride(-1) == 1, "v_cache must have contiguous last dimension"
+    maybe_contiguous = lambda x: x.contiguous() if x is not None and x.stride(-1) != 1 else x
+    k, v = [maybe_contiguous(x) for x in (k, v)]
+    if cache_seqlens is not None and isinstance(cache_seqlens, int):
+        cache_seqlens = torch.full(
+            (k_cache.shape[0],), cache_seqlens, dtype=torch.int32, device=k_cache.device
+        )
+    cache_seqlens = maybe_contiguous(cache_seqlens)
+    block_table = maybe_contiguous(block_table)
+    flash_attn_cuda.reshape_and_cache(
+        k_cache,
+        v_cache,
+        k,
+        v,
+        cache_seqlens,
+        block_table,
+        rotary_cos,
+        rotary_sin,
+        rotary_interleaved,
+        seq_ids,
+        page_fault_mask,
+        force_append,
+    )

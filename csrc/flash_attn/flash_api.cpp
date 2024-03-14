@@ -217,7 +217,8 @@ void set_params_ecc(
     Flash_fwd_params &params, 
     const at::Tensor &seq_ids,
     const at::Tensor &page_fault_mask,
-    const bool force_append
+    const bool force_append,
+    const bool append_only
 ) {
     CHECK_DEVICE(seq_ids);
     CHECK_CONTIGUOUS(seq_ids);
@@ -225,6 +226,7 @@ void set_params_ecc(
     params.do_ecc = true;
     params.page_fault_mask = page_fault_mask.data_ptr();
     params.force_append = force_append;
+    params.append_only = append_only;
 }
 
 void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi_slopes_, int batch_size, int num_heads){
@@ -244,6 +246,156 @@ void set_params_alibi(Flash_fwd_params &params, c10::optional<at::Tensor> &alibi
         params.alibi_slopes_ptr = nullptr;
     }
 #endif
+}
+
+void
+reshape_and_cache(
+    const at::Tensor &kcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+    const at::Tensor &vcache,            // batch_size_c x seqlen_k x num_heads_k x head_size or num_blocks x page_block_size x num_heads_k x head_size if there's a block_table.
+    const at::Tensor &k, // batch_size x seqlen_knew x num_heads_k x head_size
+    const at::Tensor &v, // batch_size x seqlen_knew x num_heads_k x head_size
+    const at::Tensor &seqlens_k, // batch_size
+    const at::Tensor &block_table, // batch_size x max_num_blocks_per_seq
+    c10::optional<const at::Tensor> &rotary_cos_, // seqlen_ro x (rotary_dim / 2)
+    c10::optional<const at::Tensor> &rotary_sin_, // seqlen_ro x (rotary_dim / 2)
+    bool is_rotary_interleaved,   // if true, rotary combines indices 0 & 1, else indices 0 & rotary_dim / 2
+    at::Tensor &seq_ids,             // batch_size
+    at::Tensor &page_fault_mask,      // batch_size x max_num_blocks_per_seq
+    const bool force_append
+) {
+    auto dprops = at::cuda::getCurrentDeviceProperties();
+    auto dtype = k.dtype();
+    TORCH_CHECK(dtype == torch::kFloat16 || dtype == torch::kBFloat16,
+                "FlashAttention only support fp16 and bf16 data type");
+    TORCH_CHECK(kcache.dtype() == dtype, "query and key must have the same dtype");
+    TORCH_CHECK(vcache.dtype() == dtype, "query and value must have the same dtype");
+    TORCH_CHECK(k.dtype() == dtype, "query and key must have the same dtype");
+    TORCH_CHECK(v.dtype() == dtype, "query and value must have the same dtype");
+
+    CHECK_DEVICE(k); CHECK_DEVICE(kcache); CHECK_DEVICE(vcache); CHECK_DEVICE(v); 
+
+    TORCH_CHECK(kcache.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+    TORCH_CHECK(vcache.stride(-1) == 1, "Input tensor must have contiguous last dimension");
+
+    CHECK_DEVICE(block_table);
+    TORCH_CHECK(block_table.dtype() == torch::kInt32, "block_table must have dtype torch.int32");
+    TORCH_CHECK(block_table.stride(-1) == 1, "block_table must have contiguous last dimension");
+
+    const auto sizes = k.sizes();
+
+    const int batch_size = sizes[0];
+    int seqlen_q = sizes[1];
+    int num_heads = sizes[2];
+    const int head_size_og = sizes[3];
+
+    const int max_num_blocks_per_seq = block_table.size(1);
+    const int num_blocks = kcache.size(0);
+    const int page_block_size = kcache.size(1);
+    TORCH_CHECK(page_block_size % 16 == 0, "Paged KV cache block size must be divisible by 16");
+    const int seqlen_k = max_num_blocks_per_seq * page_block_size;
+    const int num_heads_k = kcache.size(2);
+    const int batch_size_c = batch_size;
+    TORCH_CHECK(batch_size > 0, "batch size must be postive");
+    TORCH_CHECK(head_size_og <= 256, "FlashAttention forward only supports head dimension at most 256");
+    TORCH_CHECK(head_size_og % 8 == 0, "Head size must (temporarily) be a multiple of 8");
+    TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
+
+    CHECK_SHAPE(k, batch_size, seqlen_q, num_heads_k, head_size_og);
+    CHECK_SHAPE(v, batch_size, seqlen_q, num_heads_k, head_size_og);
+    CHECK_SHAPE(kcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
+    CHECK_SHAPE(vcache, batch_size_c, seqlen_k, num_heads_k, head_size_og);
+
+    auto round_multiple = [](int x, int m) { return (x + m - 1) / m * m; };
+    const int head_size = round_multiple(head_size_og, 8);
+    const int head_size_rounded = round_multiple(head_size, 32);
+    const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
+    const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
+
+    // Otherwise the kernel will be launched from cuda:0 device
+    // Cast to char to avoid compiler warning about narrowing
+    at::cuda::CUDAGuard device_guard{(char)k.get_device()};
+
+    auto opts = k.options();
+
+    Flash_fwd_params params;
+    set_params_fprop(params,
+                     batch_size,
+                     seqlen_q, seqlen_k,
+                     seqlen_q_rounded, seqlen_k_rounded,
+                     num_heads, num_heads_k,
+                     head_size, head_size_rounded,
+                     /*q=*/k, kcache, vcache, /*out=*/k,
+                     0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+    TORCH_CHECK(k.stride(-1) == 1, "Key tensor must have contiguous last dimension");
+    TORCH_CHECK(v.stride(-1) == 1, "Value tensor must have contiguous last dimension");
+    int seqlen_knew = k.size(1);
+    params.seqlen_knew = seqlen_knew;
+    params.knew_ptr = k.data_ptr();
+    params.vnew_ptr = v.data_ptr();
+    // All stride are in elements, not bytes.
+    params.knew_batch_stride = k.stride(0);
+    params.vnew_batch_stride = v.stride(0);
+    params.knew_row_stride = k.stride(-3);
+    params.vnew_row_stride = v.stride(-3);
+    params.knew_head_stride = k.stride(-2);
+    params.vnew_head_stride = v.stride(-2);
+
+    TORCH_CHECK(seqlens_k.dtype() == torch::kInt32, "seqlens_k must have dtype int32");
+    CHECK_DEVICE(seqlens_k);
+    CHECK_CONTIGUOUS(seqlens_k);
+    CHECK_SHAPE(seqlens_k, batch_size);
+    params.cu_seqlens_k = static_cast<int *>(seqlens_k.data_ptr());
+
+    if (rotary_cos_.has_value()) {
+        // TODO verify
+        auto rotary_cos = rotary_cos_.value();
+        CHECK_DEVICE(rotary_cos);
+        params.rotary_dim = rotary_cos.size(1) * 2;
+        TORCH_CHECK(params.rotary_dim <= head_size, "rotary_dim must be <= headdim");
+        TORCH_CHECK(params.rotary_dim % 16 == 0, "Only rotary dimensions divisible by 16 are currently supported");
+        const int seqlen_ro = rotary_cos.size(0);
+        TORCH_CHECK(seqlen_ro >= seqlen_k, "cos/sin seqlen must be at least the seqlen of KV cache");
+        CHECK_SHAPE(rotary_cos, seqlen_ro, params.rotary_dim / 2);
+        CHECK_CONTIGUOUS(rotary_cos);
+        TORCH_CHECK(rotary_cos.scalar_type() == dtype, "rotary_cos must have the same dtype as query");
+
+        TORCH_CHECK(rotary_sin_.has_value(), "If rotary cos is provided, rotary sin must also be provided");
+        auto rotary_sin = rotary_sin_.value();
+        CHECK_DEVICE(rotary_sin);
+        CHECK_SHAPE(rotary_sin, seqlen_ro, params.rotary_dim / 2);
+        CHECK_CONTIGUOUS(rotary_sin);
+        TORCH_CHECK(rotary_sin.scalar_type() == dtype, "rotary_cos must have the same dtype as query");
+        params.rotary_cos_ptr = rotary_cos.data_ptr();
+        params.rotary_sin_ptr = rotary_sin.data_ptr();
+        params.is_rotary_interleaved = is_rotary_interleaved;
+    } else {
+        params.rotary_dim = 0;
+    }
+
+    set_params_splitkv(params, batch_size, num_heads,
+                       head_size, seqlen_k, seqlen_q,
+                       head_size_rounded, /*dropout*/0.f, 1, dprops, opts);
+
+    params.block_table = block_table.data_ptr<int>();
+    params.block_table_batch_stride = block_table.stride(0);
+    params.page_block_size = page_block_size;
+
+    CHECK_DEVICE(seq_ids);
+    CHECK_DEVICE(page_fault_mask);
+    TORCH_CHECK(seq_ids.size(0) == batch_size, "seq_ids must have the same batch size as the input");
+    CHECK_CONTIGUOUS(seq_ids);
+    CHECK_CONTIGUOUS(page_fault_mask);
+    TORCH_CHECK(page_fault_mask.size(0) == batch_size, "page_fault_mask must have the same batch size as the input");
+    TORCH_CHECK(block_table.size(1) == page_fault_mask.size(1), "block_table and page_fault_mask must have the same number of blocks per sequence");
+    TORCH_CHECK(seq_ids.scalar_type() == torch::kInt32, "seq_ids must have dtype int32");
+    TORCH_CHECK(page_fault_mask.scalar_type() == torch::kInt32, "page_fault_mask must have dtype int32");
+    set_params_ecc(params, seq_ids, page_fault_mask, force_append, true);
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    // Only split kernel supports appending to KV cache, or indexing to the cache with cache_batch_idx,
+    // or paged KV cache
+    run_mha_fwd(params, stream);
 }
 
 std::vector<at::Tensor>
@@ -505,7 +657,7 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
         TORCH_CHECK(block_table.size(1) == page_fault_mask.size(1), "block_table and page_fault_mask must have the same number of blocks per sequence");
         TORCH_CHECK(seq_ids.scalar_type() == torch::kInt32, "seq_ids must have dtype int32");
         TORCH_CHECK(page_fault_mask.scalar_type() == torch::kInt32, "page_fault_mask must have dtype int32");
-        set_params_ecc(params, seq_ids, page_fault_mask, force_append);
+        set_params_ecc(params, seq_ids, page_fault_mask, force_append, false);
     }
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
@@ -536,4 +688,5 @@ mha_fwd_kvcache(at::Tensor &q,                 // batch_size x seqlen_q x num_he
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "FlashAttention";
     m.def("fwd_kvcache", &mha_fwd_kvcache, "Forward pass, with KV-cache");
+    m.def("reshape_and_cache", &reshape_and_cache, "append KV to KV-cache");
 }

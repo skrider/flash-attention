@@ -100,7 +100,8 @@ struct Flash_fwd_params : public Qkv_params {
     // Mask where 1s indicate the presence of a page fault
     void * __restrict__ page_fault_mask; // [b, h, n_block]
     bool do_ecc;
-    bool force_append;
+    bool force_append; // overwrite block ECCs
+    bool append_only; // only append, don't compute
 
     // The cos and sin matrices for rotary embedding.
     void * __restrict__ rotary_cos_ptr;
